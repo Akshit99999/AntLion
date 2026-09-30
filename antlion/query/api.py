@@ -9,7 +9,9 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
+from antlion.query.dashboard import DASHBOARD_HTML
 from antlion.storage.database import AntlionDatabase
 
 logger = logging.getLogger("antlion.query.api")
@@ -38,6 +40,12 @@ def create_query_api(db: Optional[AntlionDatabase] = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    @app.get("/dashboard", response_class=HTMLResponse, tags=["Dashboard"])
+    async def dashboard_view():
+        """Serves the interactive cybersecurity SOC threat console."""
+        return HTMLResponse(content=DASHBOARD_HTML, status_code=200)
 
     @app.get("/api/v1/health", tags=["System"])
     async def health() -> Dict[str, str]:
