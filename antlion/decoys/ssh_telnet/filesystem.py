@@ -16,6 +16,7 @@ class FakeFilesystem:
         self.hostname = hostname
         self.current_user = "root"
         self.cwd = "/root"
+        self.captured_payloads: List[Dict[str, Any]] = []
 
         # Virtual files and contents
         self.files: Dict[str, str] = {
@@ -199,10 +200,25 @@ class FakeFilesystem:
         if binary in ("curl", "wget"):
             # Deceptively simulate fetch without outbound network access
             target_url = args[-1] if args else ""
+            filename = posixpath.basename(target_url.split("?")[0]) or "payload.sh"
+            payload_path = f"/tmp/{filename}"
+            import hashlib
+            payload_hash = hashlib.sha256(f"{target_url}:{cmd_str}".encode()).hexdigest()
+
+            # Record forensic payload evidence
+            self.captured_payloads.append({
+                "url": target_url,
+                "destination": payload_path,
+                "sha256": payload_hash,
+                "command": cmd_str,
+            })
+            # Persist simulated script in virtual filesystem
+            self.files[payload_path] = f"#!/bin/sh\n# Antlion Honeypot Captured Payload\n# Source: {target_url}\n# SHA256: {payload_hash}\n"
+
             return (
                 f"-- Connected to host --\n"
                 f"HTTP request sent, awaiting response... 200 OK\n"
-                f"Saving to: '/tmp/{posixpath.basename(target_url) or 'payload'}'\n"
+                f"Saving to: '{payload_path}'\n"
                 f"100% [====================================>] 4,096  --.-KB/s in 0.01s\n"
             ), 0
 
