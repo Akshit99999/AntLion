@@ -1,0 +1,34 @@
+[Unit]
+Description=Antlion Passive Honeypot Traffic Capture Daemon
+Documentation=https://github.com/Akshit99999/AntLion
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/log/antlion
+Environment="ANTLION_IFACE=eth0"
+Environment="ANTLION_PCAP_DIR=/var/log/antlion/pcaps"
+Environment="ANTLION_ROTATE_SECONDS=300"
+Environment="ANTLION_MAX_SIZE_MB=50"
+Environment="ANTLION_MAX_KEEP_FILES=100"
+
+ExecStart=/usr/local/bin/antlion-rotate-pcap
+Restart=always
+RestartSec=5s
+
+# Hardened service isolation
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+
+# Output logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=antlion-tcpdump
+
+[Install]
+WantedBy=multi-user.target
