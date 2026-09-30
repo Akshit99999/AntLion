@@ -99,8 +99,10 @@ def create_web_decoy_app(verdict_engine: Optional[VerdictEngine] = None) -> Fast
         request._receive = receive
 
         # 3. Determine interaction depth
+        query_str = str(request.url.query)
+        full_path = f"{path}?{query_str}" if query_str else path
         is_exploit = any(
-            x in path.lower() or (payload_str and x in payload_str.lower())
+            x in full_path.lower() or (payload_str and x in payload_str.lower())
             for x in ["union", "select", "../", "..\\", "sleep(", "whoami", "id", "/.env", "eval"]
         )
 
@@ -119,11 +121,11 @@ def create_web_decoy_app(verdict_engine: Optional[VerdictEngine] = None) -> Fast
                 depth=depth,
                 event_timestamp=datetime.now(timezone.utc),
                 http_method=method,
-                http_path=path,
+                http_path=full_path,
                 http_headers=headers,
                 http_payload=payload_str,
                 raw_metadata={
-                    "query_string": str(request.url.query),
+                    "query_string": query_str,
                     "url": str(request.url),
                 },
             )
