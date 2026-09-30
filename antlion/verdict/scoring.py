@@ -279,10 +279,14 @@ class MultiSignalScorer:
         heuristics: List[HeuristicMatch],
     ) -> SeverityLevel:
         """Determines alert severity level."""
-        # Check if any heuristic is critical
+        # Check if any heuristic is critical or high
         has_critical_heur = any(h.severity == SeverityLevel.CRITICAL for h in heuristics)
         if has_critical_heur:
             return SeverityLevel.CRITICAL
+
+        has_high_heur = any(h.severity == SeverityLevel.HIGH for h in heuristics)
+        if has_high_heur and confidence >= 0.70:
+            return SeverityLevel.HIGH
 
         # High-impact categories
         if category in (
