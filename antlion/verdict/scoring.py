@@ -146,13 +146,19 @@ class MultiSignalScorer:
         is_evasion = False
 
         if not ml_prediction:
-            # If heuristics and decoy corroborate deep interaction
-            if heuristics and event.depth in (
-                InteractionDepth.INTERACTIVE_COMMANDS,
-                InteractionDepth.WEB_EXPLOIT_PAYLOAD,
-                InteractionDepth.PAYLOAD_DELIVERY,
-            ):
-                return 0.08, False
+            # If heuristics corroborate the specific decoy interaction
+            if heuristics:
+                if any("CRED" in h.rule_id for h in heuristics) and event.depth in (
+                    InteractionDepth.AUTHENTICATION_ATTEMPT,
+                    InteractionDepth.AUTHENTICATION_SUCCESS,
+                ):
+                    return 0.08, False
+                if event.depth in (
+                    InteractionDepth.INTERACTIVE_COMMANDS,
+                    InteractionDepth.WEB_EXPLOIT_PAYLOAD,
+                    InteractionDepth.PAYLOAD_DELIVERY,
+                ):
+                    return 0.08, False
             return 0.0, False
 
         ml_cat = (ml_prediction.predicted_category or "").lower()
