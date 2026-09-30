@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "antlion"
+version = "0.1.0"
+description = "Honeypot-based intrusion detection and multi-signal attack classification system"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Akshit Sharma", email = "akshitsharma684@gmail.com"}
+]
+keywords = ["honeypot", "ids", "intrusion-detection", "machine-learning", "security", "threat-intelligence"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Information Technology",
+    "Topic :: Security",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.22.0",
+    "scikit-learn>=1.2.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+full = [
+    "xgboost>=1.7.0",
+    "scapy>=2.5.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "httpx>=0.24.0",
+]
+
+[project.scripts]
+antlion = "antlion.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["antlion*"]
