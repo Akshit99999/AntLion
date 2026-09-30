@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from antlion.alerts.dispatcher import AlertDispatcher
 from antlion.core.config import DEFAULT_CONFIG, AntlionConfig
 from antlion.core.types import (
     AttackCategory,
@@ -32,6 +33,7 @@ class VerdictEngine:
         self,
         config: Optional[AntlionConfig] = None,
         db: Optional[AntlionDatabase] = None,
+        alert_dispatcher: Optional[AlertDispatcher] = None,
     ):
         self.config = config or DEFAULT_CONFIG
         self.db = db or AntlionDatabase(self.config.get_db_path())
@@ -40,6 +42,7 @@ class VerdictEngine:
             burst_threshold=self.config.heuristics.burst_threshold_per_window,
         )
         self.scorer = MultiSignalScorer(weights=self.config.scoring)
+        self.alerts = alert_dispatcher or AlertDispatcher()
 
     def process_decoy_event(
         self,
@@ -67,6 +70,9 @@ class VerdictEngine:
 
         # 5. Persist verdict to database
         self.db.persist_verdict(verdict)
+
+        # 6. Notify SIEM and chat webhooks if high/critical
+        self.alerts.notify(verdict)
 
         logger.info(
             "Verdict generated: IP=%s Target=%s Category=%s Severity=%s Confidence=%.2f",
