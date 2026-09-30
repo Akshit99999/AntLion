@@ -236,6 +236,76 @@ def create_web_decoy_app(verdict_engine: Optional[VerdictEngine] = None) -> Fast
             },
         )
 
+    @app.get("/.env")
+    async def trap_env_file():
+        """Honey environment file trap leaking fake canary tokens."""
+        return Response(
+            content=(
+                "# Enterprise Infrastructure Environment Variables\n"
+                "ENVIRONMENT=production\n"
+                "DATABASE_URL=postgres://infra_admin:canary_db_token_9918@10.0.2.20:5432/infra_prod\n"
+                "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7CANARY1\n"
+                "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYCANARY01\n"
+                "JWT_SECRET=canary_sec_key_alpha_9981290\n"
+            ),
+            media_type="text/plain",
+            status_code=200,
+        )
+
+    @app.get("/.git/config")
+    async def trap_git_config():
+        """Honey git config exposure trap."""
+        return Response(
+            content=(
+                "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n"
+                "[remote \"origin\"]\n\turl = git@github.corp.internal:infra/cluster-ops.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
+            ),
+            media_type="text/plain",
+            status_code=200,
+        )
+
+    @app.get("/.git/HEAD")
+    async def trap_git_head():
+        return Response(content="ref: refs/heads/main\n", media_type="text/plain", status_code=200)
+
+    @app.get("/latest/meta-data/")
+    async def trap_aws_metadata_root():
+        """AWS IMDSv1 SSRF honeypot trap."""
+        return Response(content="ami-id\nhostname\niam/\ninstance-id\nlocal-ipv4\n", media_type="text/plain")
+
+    @app.get("/latest/meta-data/iam/security-credentials/")
+    async def trap_aws_iam_list():
+        return Response(content="InfraOpsClusterAdminRole\n", media_type="text/plain")
+
+    @app.get("/latest/meta-data/iam/security-credentials/{role}")
+    async def trap_aws_iam_role(role: str):
+        """Emits traceable canary AWS credentials."""
+        return {
+            "Code": "Success",
+            "LastUpdated": "2026-09-30T19:40:00Z",
+            "Type": "AWS-HMAC",
+            "AccessKeyId": "ASIA99CANARYHONEYTOKEN1",
+            "SecretAccessKey": "canary99secret_key_access_antlion_trap_token_x99",
+            "Token": "canary_session_token_trap_active_monitoring_991823",
+            "Expiration": "2026-10-01T04:00:00Z",
+        }
+
+    @app.get("/graphql")
+    @app.post("/graphql")
+    async def trap_graphql():
+        """GraphQL introspection trap."""
+        return {
+            "data": {
+                "__schema": {
+                    "types": [
+                        {"name": "Query", "kind": "OBJECT"},
+                        {"name": "User", "kind": "OBJECT"},
+                        {"name": "AdminSecret", "kind": "OBJECT"},
+                    ]
+                }
+            }
+        }
+
     @app.get("/healthz")
     async def health():
         return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
