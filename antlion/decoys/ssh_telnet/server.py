@@ -169,6 +169,9 @@ class InteractiveDecoyServer:
                     else InteractionDepth.INTERACTIVE_COMMANDS
                 )
 
+                # Execute inside simulated filesystem
+                out, code = fs.execute_command(cmd)
+
                 # 3. Interactive command event
                 if self.verdict_engine:
                     cmd_event = DecoyEvent(
@@ -180,11 +183,10 @@ class InteractiveDecoyServer:
                         username=username,
                         password=password,
                         commands=list(entered_commands),
+                        raw_metadata={"captured_payloads": list(fs.captured_payloads)},
                     )
                     self.verdict_engine.process_decoy_event(cmd_event)
 
-                # Execute inside simulated filesystem
-                out, code = fs.execute_command(cmd)
                 if out:
                     # Normalize linebreaks to CRLF for terminal
                     crlf_out = out.replace("\r\n", "\n").replace("\n", "\r\n")
