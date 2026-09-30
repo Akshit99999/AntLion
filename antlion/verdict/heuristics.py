@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Deque, Dict, List, Optional, Tuple
 
 from antlion.core.types import DecoyEvent, HeuristicMatch, SeverityLevel
+from antlion.intel.enricher import IPThreatEnricher
 
 
 class BehavioralHeuristicsEngine:
@@ -146,9 +147,15 @@ class BehavioralHeuristicsEngine:
         ),
     ]
 
-    def __init__(self, rate_window_seconds: int = 60, burst_threshold: int = 8):
+    def __init__(
+        self,
+        rate_window_seconds: int = 60,
+        burst_threshold: int = 8,
+        enricher: Optional[IPThreatEnricher] = None,
+    ):
         self.rate_window_seconds = rate_window_seconds
         self.burst_threshold = burst_threshold
+        self.enricher = enricher or IPThreatEnricher()
         # Sliding history per IP: deque of timestamps
         self._ip_history: Dict[str, Deque[float]] = defaultdict(deque)
         # Port targeting history per IP: deque of (timestamp, port)
@@ -186,7 +193,37 @@ class BehavioralHeuristicsEngine:
             web_matches = self._check_web_signatures(event.http_path, event.http_payload)
             matches.extend(web_matches)
 
+        # 6. ASN, Hosting, & Tor threat intelligence evaluation
+        intel_match = self._check_ip_threat_intel(event.source_ip)
+        if intel_match:
+            matches.append(intel_match)
+
         return matches
+
+    def _check_ip_threat_intel(self, ip_str: str) -> Optional[HeuristicMatch]:
+        """Evaluates whether attacker IP belongs to an anonymous proxy or abuse hosting provider."""
+        if not self.enricher:
+            return None
+        profile = self.enricher.enrich(ip_str)
+        if profile.is_tor_proxy:
+            return HeuristicMatch(
+                rule_id="RULE_TOR_PROXY_INTRUSION",
+                rule_name="Anonymized Tor Exit Node Probe",
+                score=0.88,
+                severity=SeverityLevel.HIGH,
+                description=f"Inbound traffic originates from verified Tor relay / anonymous proxy ({profile.country})",
+                metadata=profile.to_dict(),
+            )
+        if profile.is_hosting:
+            return HeuristicMatch(
+                rule_id="RULE_HOSTING_ABUSE_INFRA",
+                rule_name="Commercial Cloud / Bulletproof Host Scanner",
+                score=0.78,
+                severity=SeverityLevel.MEDIUM,
+                description=f"Traffic originated from commercial datacenter/hosting ASN ({profile.isp}, {profile.country})",
+                metadata=profile.to_dict(),
+            )
+        return None
 
     def _check_rate_heuristics(
         self, ip: str, port: int, event_time: datetime
