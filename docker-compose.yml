@@ -1,0 +1,88 @@
+version: "3.9"
+
+# ---------------------------------------------------------------------------
+# Antlion — honeypot intrusion detection system
+#
+# Services:
+#   antlion-api       REST API + SOC Dashboard  → http://localhost:8000
+#   antlion-web-decoy Web honeypot              → http://localhost:8080
+#   antlion-ssh-decoy SSH/Telnet honeypot       → tcp://localhost:2222
+#
+# Shared volume:
+#   antlion-data      SQLite DB, trained models, PCAP ring-buffer
+#
+# Alert webhooks (set in .env or export before running docker compose up):
+#   ANTLION_DISCORD_WEBHOOK   Discord webhook URL for HIGH/CRITICAL alerts
+#   ANTLION_SLACK_WEBHOOK     Slack incoming webhook URL
+#   ANTLION_ALERT_SEVERITY    Minimum severity to page (default: HIGH)
+# ---------------------------------------------------------------------------
+
+services:
+
+  antlion-api:
+    build: .
+    container_name: antlion-api
+    restart: unless-stopped
+    command: antlion api --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - antlion-data:/root/.antlion
+    environment:
+      - ANTLION_DISCORD_WEBHOOK=${ANTLION_DISCORD_WEBHOOK:-}
+      - ANTLION_SLACK_WEBHOOK=${ANTLION_SLACK_WEBHOOK:-}
+      - ANTLION_ALERT_SEVERITY=${ANTLION_ALERT_SEVERITY:-HIGH}
+      - ANTLION_DB_PATH=/root/.antlion/antlion.db
+    networks:
+      - antlion-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  antlion-web-decoy:
+    build: .
+    container_name: antlion-web-decoy
+    restart: unless-stopped
+    command: antlion decoy web --host 0.0.0.0 --port 8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - antlion-data:/root/.antlion
+    environment:
+      - ANTLION_DISCORD_WEBHOOK=${ANTLION_DISCORD_WEBHOOK:-}
+      - ANTLION_SLACK_WEBHOOK=${ANTLION_SLACK_WEBHOOK:-}
+      - ANTLION_ALERT_SEVERITY=${ANTLION_ALERT_SEVERITY:-HIGH}
+      - ANTLION_DB_PATH=/root/.antlion/antlion.db
+    networks:
+      - antlion-net
+    depends_on:
+      - antlion-api
+
+  antlion-ssh-decoy:
+    build: .
+    container_name: antlion-ssh-decoy
+    restart: unless-stopped
+    command: antlion decoy ssh --host 0.0.0.0 --port 2222
+    ports:
+      - "2222:2222"
+    volumes:
+      - antlion-data:/root/.antlion
+    environment:
+      - ANTLION_DISCORD_WEBHOOK=${ANTLION_DISCORD_WEBHOOK:-}
+      - ANTLION_SLACK_WEBHOOK=${ANTLION_SLACK_WEBHOOK:-}
+      - ANTLION_ALERT_SEVERITY=${ANTLION_ALERT_SEVERITY:-HIGH}
+      - ANTLION_DB_PATH=/root/.antlion/antlion.db
+    networks:
+      - antlion-net
+    depends_on:
+      - antlion-api
+
+volumes:
+  antlion-data:
+    driver: local
+
+networks:
+  antlion-net:
+    driver: bridge
