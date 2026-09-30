@@ -79,6 +79,8 @@ class FakeFilesystem:
                 "git pull origin main\n"
                 "journalctl -u ssh -n 50\n"
             ),
+            "/var/log/syslog": "Sep 30 19:35:01 prod-api-gw-01 CRON[1890]: (root) CMD (/usr/local/bin/healthcheck.sh)\n",
+            "/var/log/auth.log": "Sep 30 19:40:12 prod-api-gw-01 sshd[2014]: Accepted publickey for deploy from 10.0.1.2 port 48291 ssh2\n",
         }
 
         # Virtual directories
@@ -245,6 +247,13 @@ class FakeFilesystem:
                     entries.append(rel)
 
         if not entries:
+            if show_all:
+                return (
+                    "total 8\n"
+                    "drwxr-xr-x 2 root root 4096 Sep 30 19:42 .\n"
+                    "drwxr-xr-x 4 root root 4096 Sep 30 19:40 ..\n",
+                    0,
+                )
             return "", 0
 
         entries.sort()
