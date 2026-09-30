@@ -167,10 +167,34 @@ antlion decoy web --port 8080
 antlion decoy ssh --port 2222
 ```
 
-### Starting the Query API
+### Starting the Query API & Interactive SOC Dashboard
 ```bash
 antlion api --port 8000
-# OpenAPI Docs available at http://localhost:8000/docs
+# 🖥️ Interactive SOC Console Dashboard: http://localhost:8000/
+# 📖 OpenAPI REST Documentation:       http://localhost:8000/docs
+```
+
+### Starting the Live Capture & Flow-Decoy Correlator
+```bash
+# Ingest live packets in sliding-window batches correlated directly to decoy events
+python3 -c "
+from antlion.capture.live import LiveCapturePipeline
+from antlion.verdict.engine import VerdictEngine
+pipeline = LiveCapturePipeline(verdict_engine=VerdictEngine())
+print('Live Capture & Correlation Engine Ready.')
+"
+```
+
+### Real-Time Alerts & Webhooks (Slack / Discord / CEF)
+Antlion automatically formats and streams `CRITICAL` and `HIGH` severity verdicts to configured webhooks or SIEM collectors:
+```python
+from antlion.alerts.dispatcher import AlertDispatcher
+from antlion.core.types import SeverityLevel
+
+dispatcher = AlertDispatcher(
+    webhook_urls=["https://discord.com/api/webhooks/..."],
+    min_severity=SeverityLevel.HIGH
+)
 ```
 
 ---
