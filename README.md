@@ -75,6 +75,9 @@ Traditional IDS suffer from high false-positive rates because they must separate
     [ Antlion CLI ]        [ REST API + SOC Dashboard ]
                                      │
                                      ▼
+                            [ Alert Dedup / Suppress ]
+                                     │
+                                     ▼
                             [ SIEM / Slack / Discord ]
 ```
 
@@ -114,6 +117,26 @@ Traditional IDS suffer from high false-positive rates because they must separate
 | `verdict/scoring.py` | `MultiSignalScorer` — the Tri-Signal Fusion algorithm. |
 | `verdict/heuristics.py` | `BehavioralHeuristicsEngine` — credential dictionaries, UA patterns, command/web signatures. |
 | `verdict/engine.py` | Orchestrates telemetry → heuristics → fusion → persistence → alerting. |
+
+### 6. Alert Suppression
+
+A public-facing decoy receives constant scanning traffic. Without suppression a
+single credential-stuffing host can emit thousands of identical `HIGH` alerts
+and bury the real ones.
+
+`alerts/dedup.py` collapses repeats by `(source_ip, attack_type)` within a
+sliding window, then emits **one summary alert** carrying the occurrence count:
+
+- Summaries retain the **peak severity** and **peak confidence** of the window,
+  so a critical event is never downgraded by surrounding noise.
+- Matured summaries are released even under continuous traffic.
+- Webhook and CEF messages are annotated: `Suppressed 412 similar intrusions`.
+- Thread-safe; stats exposed via `dedup.stats.to_dict()`.
+
+```bash
+ANTLION_ALERT_DEDUP_WINDOW_SEC=900   # aggregate for 15 minutes
+ANTLION_ALERT_DEDUP_ENABLED=false    # send every alert verbatim
+```
 
 ### 5. Data & Query Layer
 
@@ -175,6 +198,8 @@ Every setting is read from the environment via `AntlionConfig.from_env()`. Unset
 | `ANTLION_SLACK_WEBHOOK` | — | Slack incoming webhook URL. |
 | `ANTLION_WEBHOOK_URLS` | — | Comma-separated additional targets. |
 | `ANTLION_ALERT_SEVERITY` | `HIGH` | Minimum severity to dispatch (`LOW`/`MEDIUM`/`HIGH`/`CRITICAL`). |
+| `ANTLION_ALERT_DEDUP_WINDOW_SEC` | `300` | Collapse repeats from the same IP + attack class within this window. `0` disables. |
+| `ANTLION_ALERT_DEDUP_ENABLED` | `true` | Master switch for alert suppression. |
 | `ANTLION_API_KEY` | — | Shared secret for `/api/v1`. **Unset = unauthenticated.** |
 | `ANTLION_CORS_ORIGINS` | localhost origins | Comma-separated CORS allowlist. |
 | `ANTLION_TRUST_PROXY` | `false` | Honour `X-Forwarded-For` for attribution. |

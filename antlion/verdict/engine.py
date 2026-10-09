@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from antlion.alerts.dedup import AlertDeduplicator
 from antlion.alerts.dispatcher import AlertDispatcher
 from antlion.core.config import DEFAULT_CONFIG, AntlionConfig
 from antlion.core.types import (
@@ -65,7 +66,20 @@ class VerdictEngine:
                 "logged as CEF but not delivered externally."
             )
 
-        return AlertDispatcher(webhook_urls=webhook_urls, min_severity=min_sev)
+        dedup = AlertDeduplicator(
+            window_seconds=self.config.alert_dedup_window_sec,
+            enabled=self.config.alert_dedup_enabled,
+        )
+
+        if dedup.enabled:
+            logger.info(
+                "Alert deduplication active: %ds window",
+                self.config.alert_dedup_window_sec,
+            )
+
+        return AlertDispatcher(
+            webhook_urls=webhook_urls, min_severity=min_sev, deduplicator=dedup
+        )
 
     def process_decoy_event(
         self,

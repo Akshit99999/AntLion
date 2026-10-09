@@ -11,6 +11,7 @@ import threading
 import urllib.request
 from typing import Any, Dict, List, Optional
 
+from antlion.alerts.dedup import AlertDeduplicator
 from antlion.core.types import SeverityLevel, Verdict
 
 logger = logging.getLogger("antlion.alerts.dispatcher")
@@ -23,12 +24,19 @@ class AlertDispatcher:
         self,
         webhook_urls: Optional[List[str]] = None,
         min_severity: SeverityLevel = SeverityLevel.HIGH,
+        deduplicator: Optional[AlertDeduplicator] = None,
     ):
         self.webhook_urls: List[str] = webhook_urls or []
         self.min_severity = min_severity
+        self.deduplicator = deduplicator or AlertDeduplicator()
 
     def notify(self, verdict: Verdict) -> None:
-        """Asynchronously dispatches alerts if verdict severity meets threshold."""
+        """Asynchronously dispatches alerts if verdict severity meets threshold.
+
+        Repeated verdicts sharing a (source_ip, attack_type) key within the
+        deduplication window are suppressed and later emitted as a single
+        summary alert carrying the occurrence count.
+        """
         severity_order = {
             SeverityLevel.LOW: 1,
             SeverityLevel.MEDIUM: 2,
@@ -42,7 +50,25 @@ class AlertDispatcher:
         if verdict_rank < thresh_rank:
             return
 
-        # Format Common Event Format log entry
+        # Release any window summaries that have matured before evaluating this
+        # verdict, so continuous traffic never starves pending summaries.
+        for summary in self.deduplicator.flush_expired():
+            self._dispatch(summary)
+
+        should_emit, occurrence = self.deduplicator.check(verdict)
+        if not should_emit:
+            logger.debug(
+                "Alert suppressed (occurrence %d) for %s / %s",
+                occurrence,
+                verdict.source_ip,
+                verdict.attack_type.value,
+            )
+            return
+
+        self._dispatch(verdict)
+
+    def _dispatch(self, verdict: Verdict) -> None:
+        """Logs the CEF entry and delivers webhooks off the caller thread."""
         cef_entry = self.format_cef(verdict)
         logger.warning("[SIEM-CEF] %s", cef_entry)
 
@@ -55,6 +81,17 @@ class AlertDispatcher:
         )
         t.start()
 
+    def flush_summaries(self) -> List[Verdict]:
+        """Emits and returns any matured suppression summaries.
+
+        Useful for graceful shutdown or a periodic scheduler so the final
+        alerts in a window are not left undelivered.
+        """
+        summaries = self.deduplicator.flush_expired()
+        for summary in summaries:
+            self._dispatch(summary)
+        return summaries
+
     def format_cef(self, v: Verdict) -> str:
         """Formats verdict into industry standard Common Event Format (CEF)."""
         severity_num = 10 if v.severity == SeverityLevel.CRITICAL else (8 if v.severity == SeverityLevel.HIGH else 5)
@@ -63,8 +100,16 @@ class AlertDispatcher:
             f"CEF:0|Antlion|Honeypot-IDS|0.1.0|{attack_clean}|{attack_clean}|{severity_num}|"
             f"src={v.source_ip} dproc={v.target_service} "
             f"cn1={round(v.confidence, 2)} cn1Label=Confidence "
-            f"msg=Intrusion captured in decoy pit"
+            f"msg={self._cef_message(v)}"
         )
+
+    @staticmethod
+    def _cef_message(v: Verdict) -> str:
+        """CEF message body, annotated when the alert is a suppression summary."""
+        suppressed = v.raw_evidence.get("suppressed_count")
+        if suppressed and suppressed > 1:
+            return f"Suppressed {suppressed} similar intrusions from decoy pit"
+        return "Intrusion captured in decoy pit"
 
     def _send_webhooks(self, verdict: Verdict) -> None:
         for url in self.webhook_urls:
