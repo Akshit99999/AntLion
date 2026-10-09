@@ -254,10 +254,60 @@ Data routes require `X-API-Key` (or `Authorization: Bearer …`) when `ANTLION_A
 | `GET` | `/api/v1/verdicts/{id}` | Yes | Single verdict |
 | `GET` | `/api/v1/intel/{ip}` | Yes | Forensic dossier and timeline |
 | `GET` | `/api/v1/stats` | Yes | Aggregated statistics |
+| `GET` | `/metrics` | No | Prometheus metrics (text exposition format) |
 | `GET` | `/docs` | — | OpenAPI UI |
 
 ```bash
 curl -H "X-API-Key: $ANTLION_API_KEY" http://localhost:8000/api/v1/stats
+```
+
+---
+
+## Observability
+
+`GET /metrics` exposes Prometheus metrics in the text exposition format. No
+`prometheus_client` dependency is required — `core/metrics.py` emits the format
+directly for a fixed set of counters and gauges.
+
+```yaml
+scrape_configs:
+  - job_name: antlion
+    static_configs:
+      - targets: ['antlion-api:8000']
+```
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `antlion_verdicts_total` | counter | `severity`, `attack_type` | Verdicts produced |
+| `antlion_verdict_confidence` | gauge | `attack_type` | Most recent verdict confidence |
+| `antlion_decoy_events_total` | counter | `service`, `depth` | Raw decoy events captured |
+| `antlion_decoy_connections_active` | gauge | `service` | Currently open decoy sessions |
+| `antlion_decoy_connections_rejected_total` | counter | `service` | Connections refused at the cap |
+| `antlion_alerts_delivered_total` | counter | `result` | Webhook deliveries (`success`/`failure`) |
+| `antlion_alerts_emitted_total` | gauge | — | Alerts actually dispatched |
+| `antlion_alerts_suppressed_total` | gauge | — | Alerts collapsed by dedup |
+| `antlion_flows_tracked` | gauge | — | Flow accumulators in memory |
+| `antlion_ip_flow_cache_entries` | gauge | — | Per-IP correlation cache size |
+| `antlion_verdicts_stored` | gauge | — | Verdicts persisted |
+| `antlion_distinct_attackers` | gauge | — | Distinct source IPs recorded |
+| `antlion_decoy_events_stored` | gauge | — | Decoy events persisted |
+| `antlion_flow_records_stored` | gauge | — | Flow records persisted |
+
+The scrape endpoint is **unauthenticated by design**: scrapers conventionally
+reach it over an internal network, and the payload is aggregate counters only —
+no credentials, no attacker IPs, no verdict detail. A test asserts this.
+
+Alerts worth alerting on:
+
+```promql
+# Suppression is working but something is still firing
+rate(antlion_alerts_suppressed_total[5m]) > 100
+
+# Decoy is refusing connections — the cap is being hit
+rate(antlion_decoy_connections_rejected_total[5m]) > 0
+
+# Webhook deliveries are failing
+rate(antlion_alerts_delivered_total{result="failure"}[5m]) > 0
 ```
 
 ---

@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from antlion.alerts.dedup import AlertDeduplicator
 from antlion.alerts.dispatcher import AlertDispatcher
 from antlion.core.config import DEFAULT_CONFIG, AntlionConfig
+from antlion.core.metrics import record_decoy_event, record_verdict
 from antlion.core.types import (
     AttackCategory,
     DecoyEvent,
@@ -110,6 +111,21 @@ class VerdictEngine:
 
         # 6. Notify SIEM and chat webhooks if high/critical
         self.alerts.notify(verdict)
+
+        # 7. Export counters for Prometheus. Guarded so a metrics failure can
+        #    never prevent the verdict from being persisted or dispatched.
+        try:
+            record_verdict(
+                severity=verdict.severity,
+                attack_type=verdict.attack_type.value,
+                confidence=verdict.confidence,
+            )
+            record_decoy_event(
+                service=event.target_service.value,
+                depth=event.depth.value,
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("Metrics recording skipped: %s", e)
 
         logger.info(
             "Verdict generated: IP=%s Target=%s Category=%s Severity=%s Confidence=%.2f",

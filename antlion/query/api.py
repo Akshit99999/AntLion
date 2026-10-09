@@ -10,13 +10,33 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from antlion.core.config import DEFAULT_CONFIG, AntlionConfig
+from antlion.core.metrics import REGISTRY, set_database_gauges
 from antlion.query.dashboard import DASHBOARD_HTML
 from antlion.storage.database import AntlionDatabase
 
 logger = logging.getLogger("antlion.query.api")
+
+
+def refresh_database_gauges(database: AntlionDatabase) -> None:
+    """Updates scrape-time gauges from persisted state.
+
+    Failures are swallowed: a metrics scrape must never take down the API or
+    surface a database error to a monitoring system as a 500.
+    """
+    try:
+        stats = database.get_system_stats()
+        set_database_gauges(
+            registry=REGISTRY,
+            total_verdicts=int(stats.get("total_verdicts", 0)),
+            distinct_attackers=int(stats.get("distinct_attackers", 0)),
+            decoy_events=int(stats.get("total_decoy_hits", 0)),
+            flow_records=int(stats.get("total_flows_monitored", 0)),
+        )
+    except Exception as e:
+        logger.debug("Database gauge refresh failed: %s", e)
 
 
 def create_query_api(
@@ -134,6 +154,23 @@ def create_query_api(
     ) -> Dict[str, Any]:
         """Retrieves comprehensive forensic dossier and interaction timeline for a given IP."""
         return database.get_ip_intel(source_ip)
+
+    @app.get(
+        "/metrics",
+        response_class=PlainTextResponse,
+        tags=["Observability"],
+        include_in_schema=False,
+    )
+    async def prometheus_metrics() -> str:
+        """Exposes Prometheus metrics in the text exposition format.
+
+        Deliberately unauthenticated: Prometheus scrapers conventionally reach
+        the endpoint over an internal network, and the payload contains only
+        aggregate counters and gauges — no captured credentials, no attacker
+        IPs, no verdict detail.
+        """
+        refresh_database_gauges(database)
+        return REGISTRY.render()
 
     @app.get("/api/v1/stats", tags=["Analytics"])
     async def get_system_stats(

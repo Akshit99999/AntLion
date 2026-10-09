@@ -56,6 +56,11 @@ class InteractiveDecoyServer:
         self._active_sockets: Set[socket.socket] = set()
         self._lock = threading.Lock()
         self._total_rejected = 0
+        self._total_accepted = 0
+
+        from antlion.core.metrics import REGISTRY
+
+        self._metrics = REGISTRY
 
     @property
     def active_connections(self) -> int:
@@ -128,14 +133,26 @@ class InteractiveDecoyServer:
                     # Answering would also let an attacker hold sessions open
                     # at the OS level even though we never spawn a thread.
                     self._total_rejected += 1
+                    self._metrics.inc(
+                        "antlion_decoy_connections_rejected_total",
+                        service=self.service_type.value,
+                    )
                     try:
                         client_sock.close()
                     except Exception:
                         pass
                     continue
 
+                self._total_accepted += 1
+
                 with self._lock:
                     self._active_sockets.add(client_sock)
+
+                self._metrics.set(
+                    "antlion_decoy_connections_active",
+                    self.active_connections + 1,
+                    service=self.service_type.value,
+                )
 
                 client_thread = threading.Thread(
                     target=self._handle_client,
@@ -266,6 +283,13 @@ class InteractiveDecoyServer:
             with self._lock:
                 self._active_sockets.discard(sock)
                 self._active_threads.discard(threading.current_thread())
+                active = len(self._active_threads)
+
+            self._metrics.set(
+                "antlion_decoy_connections_active",
+                active,
+                service=self.service_type.value,
+            )
             try:
                 sock.close()
             except Exception:
