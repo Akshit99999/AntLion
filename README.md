@@ -1,42 +1,44 @@
-# Antlion 🐜🦁
+# Antlion
+
 ### Honeypot-Based Intrusion Detection and Multi-Signal Attack Classification System
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Architecture: Defensive IDS](https://img.shields.io/badge/Security-Passive%20Defensive-green.svg)](#concept--philosophy)
 
-> **Antlion** is an original defensive security research platform. Like the predatory insect larva that digs a conical sand pit to ambush prey, Antlion operates decoy services—**the "pit"**—where any inbound connection represents inherently malicious ground truth. Captured network traffic and application interactions are transformed into flow-level features, classified by machine learning models, cross-evaluated against behavioral heuristics, and synthesized through a multi-signal **Verdict Engine**.
+> **Antlion** is a defensive security research platform. Like the predatory insect larva that digs a conical sand pit to ambush prey, Antlion operates decoy services — **the "pit"** — where any inbound connection is inherently malicious ground truth. Captured traffic and application interactions are transformed into flow-level features, classified by machine learning, cross-evaluated against behavioral heuristics, and fused by a multi-signal **Verdict Engine**.
 
 ---
 
 ## Table of Contents
-1. [Concept & Philosophy](#concept--philosophy)
-2. [System Architecture](#system-architecture)
-3. [Component Breakdown](#component-breakdown)
-   - [Decoy Layer (The Pit)](#1-decoy-layer-the-pit)
-   - [Capture Layer](#2-capture-layer)
-   - [Classification Engine](#3-classification-engine)
-   - [Verdict Engine](#4-verdict-engine)
-   - [Data & Query Layer](#5-data--query-layer)
-4. [Cloud Deployment & Isolation Guide (EC2 Setup)](#cloud-deployment--isolation-guide-ec2-setup)
-5. [Safe Defensive Operating Instructions](#safe-defensive-operating-instructions)
-6. [Getting Started & Installation](#getting-started--installation)
-7. [API & CLI Query Interface](#api--cli-query-interface)
+
+- [Concept & Philosophy](#concept--philosophy)
+- [Architecture](#architecture)
+- [Components](#components)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [CLI Reference](#cli-reference)
+- [REST API](#rest-api)
+- [Security Model](#security-model)
+- [Development](#development)
+- [Deployment](#deployment)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Concept & Philosophy
 
-Traditional Intrusion Detection Systems (IDS) suffer from high false-positive rates because they must differentiate between legitimate business traffic and malicious activity within production environments. 
+Traditional IDS suffer from high false-positive rates because they must separate legitimate production traffic from malicious activity.
 
-**Antlion flips this paradigm:**
+**Antlion inverts this:**
+
 - Decoys have **no production purpose** and **no legitimate users**.
-- Any connection to an Antlion decoy is **inherently malicious ground truth ($P(\text{malicious}) \approx 1.0$)**.
-- Network flow dynamics alone can be ambiguous, and signature matching can be bypassed. However, by merging **network flow features (ML)**, **trap telemetry (Ground Truth)**, and **session behavior (Heuristics)**, Antlion produces high-fidelity, explainable verdicts without false alarms.
+- Any connection to an Antlion decoy is **inherently malicious ground truth** ($P(\text{malicious}) \approx 1.0$).
+- Flow dynamics alone can be ambiguous and signatures can be bypassed, so Antlion merges **flow features (ML)**, **trap telemetry (ground truth)**, and **session behavior (heuristics)** into explainable verdicts.
 
 ---
 
-## System Architecture
+## Architecture
 
 ```
                  [ Attacker / Internet Scanner ]
@@ -44,160 +46,284 @@ Traditional Intrusion Detection Systems (IDS) suffer from high false-positive ra
                ┌───────────────┴───────────────┐
                ▼                               ▼
        [ TCP/IP Network Flow ]         [ Decoy Services ]
-       (libpcap / tcpdump)              (The "Pit")
-               │                               │
-       ┌───────┴───────┐               ┌───────┴───────┐
-       ▼               ▼               ▼               ▼
- [ Rotating PCAP ] [ Raw Packets ] [ SSH Decoy ]  [ Web Decoy ]
-       │                               │               │
-       ▼                               │               │
- [ Flow Feature Extractor ]            │               │
- (CIC-IDS2017 Format)                  │               │
-       │                               ▼               ▼
-       ▼                     [ Interactive Session & Payload Logs ]
- [ ML Classifier Engine ]              │               │
- (RF / Baseline / XGB)                 │               │
-       │                               ▼               ▼
-       │                     [ Behavioral Heuristic Engine ]
-       │                     (Rate limits, bad creds, UA, commands)
+               │                        (The "Pit")
+       ┌───────┴───────┐               ┌───────┬───────┐
+       ▼               ▼               ▼       ▼       ▼
+ [ Rotating PCAP ] [ Raw Packets ] [ SSH ] [ Web ] [ Telnet ]
+       │                               │       │       │
+       ▼                               └───────┴───────┘
+ [ Flow Feature Extractor ]                     │
+ (CIC-IDS2017 format)                            ▼
+       │                              [ Interactive Session &
+       ▼                                Payload Logging ]
+ [ ML Classifier ]                             │
+ (RF / Baseline / XGB)                          ▼
+       │                        [ Behavioral Heuristic Engine ]
+       │                        (rate limits, bad creds, UA, commands)
        │                               │
        └───────────────┬───────────────┘
                        ▼
              ╔═════════════════════╗
-             ║   VERDICT ENGINE    ║  <-- Multi-signal confidence fusion,
-             ╚═════════════════════╝      interaction-depth scoring & persistence
+             ║   VERDICT ENGINE    ║  Tri-signal fusion, interaction-depth
+             ╚═════════════════════╝  scoring, congruence bonus
                        │
                        ▼
-           [ SQLite / DB Event Store ]
+           [ SQLite Event Store ]
                        │
            ┌───────────┴───────────┐
            ▼                       ▼
-    [ Antlion CLI ]        [ REST API Seam ]
+    [ Antlion CLI ]        [ REST API + SOC Dashboard ]
+                                     │
+                                     ▼
+                            [ SIEM / Slack / Discord ]
 ```
 
 ---
 
-## Component Breakdown
+## Components
 
-### 1. Decoy Layer (The Pit)
-- **SSH / Telnet Decoy**: Emulates a Linux server with custom realistic banners, randomized pseudo-filesystem, simulated shell command responses (`uname`, `id`, `cat /etc/passwd`, `ifconfig`, `ps`, `iptables`), and zero stock Cowrie fingerprints. Logs full credential pairs, typed keystrokes, and downloaded payload URLs.
-- **Web Admin Decoy**: An internal-looking administration and management portal (`InfraOps Gateway`) exposing realistic, enticing endpoints (`/login`, `/api/v1/debug`, `/config/backup`, `/health`). Captures client IP, HTTP headers, User-Agent, traversal attempts, SQL injection probes, and payloads.
+### 1. Decoy Layer — the Pit
+
+| Module | Purpose |
+|---|---|
+| `decoys/web/app.py` | FastAPI admin-portal honeypot. Captures full request metadata and serves deception traps (`.env`, `.git/config`, AWS IMDS, GraphQL). |
+| `decoys/ssh_telnet/server.py` | Threaded interactive shell decoy simulating an Ubuntu host. |
+| `decoys/ssh_telnet/filesystem.py` | In-memory Linux filesystem with realistic command emulation and payload fingerprinting (SHA-256). |
+| `decoys/ssh_telnet/banner.py` | Plausible SSH banners and MOTD generation. |
 
 ### 2. Capture Layer
-- **Passive PCAP Rotation**: Runs a background `tcpdump` rotation service with capped ring-buffer sizes and automatic compression.
-- **Flow Feature Extraction**: Pure-Python / Scapy-based network flow feature extractor emitting CIC-IDS2017 compliant statistics (Flow Duration, Fwd/Bwd Packet Counts, Flow Bytes/s, Flow Packets/s, Inter-Arrival Times [mean, std, min, max], Flag counts [SYN, FIN, RST, PSH, ACK, URG]).
+
+| Module | Purpose |
+|---|---|
+| `capture/flow_extractor.py` | Converts packets/PCAPs into CIC-IDS2017-style flow features. |
+| `capture/live.py` | `LiveCapturePipeline` correlates sliding-window flows with decoy telemetry and runs ML inference. |
 
 ### 3. Classification Engine
-- **Preprocessing Pipeline**: Robust handling of zero-variance features, extreme outliers, missing values, and high class imbalances.
-- **Model Benchmarking**: Trains and scores Random Forest, an interpretable baseline classifier, and gradient boosted models (with XGBoost or Scikit-learn GradientBoosting) on flow statistics.
-- **Per-Class Metrics**: Precision, Recall, and F1 scoring with persistent serialized model artifacts.
-- **Inference Pipeline**: Real-time flow feature consumption outputting predicted attack family and confidence distributions.
+
+| Module | Purpose |
+|---|---|
+| `classification/inference.py` | `FlowClassifier` — supervised prediction with a heuristic baseline fallback. |
+| `classification/anomaly.py` | `FlowAnomalyDetector` — Isolation Forest for zero-day flow novelty. |
+| `classification/dataset.py` | Dataset loading and preprocessing. |
+| `classification/benchmark.py` | Trains and compares multiple models, persists the winner. |
 
 ### 4. Verdict Engine
-- **Original Multi-Signal Fusion Algorithm**: Merges:
-  1. *Decoy Interaction Depth*: Handshake vs Auth Failure vs Shell Execution vs Exploit Payload.
-  2. *ML Flow Prediction*: Flow-level behavioral fingerprint and class confidence.
-  3. *Behavioral Heuristics*: Request burst rates, dictionary credential signatures (Mirai/CVEs), reconnaissance User-Agents, and suspicious command sequences.
-- **Weighted Attitudinal Alignment**: Reinforces confidence when independent signals align, and flags evasion anomalies when an attacker operates stealthily on the wire but triggers deep decoy traps.
-- **Structured Verdicts**: Stored with timestamp, attacker IP, attack category, composite confidence score, severity rating, and an auditable breakdown of contributing signals.
+
+| Module | Purpose |
+|---|---|
+| `verdict/scoring.py` | `MultiSignalScorer` — the Tri-Signal Fusion algorithm. |
+| `verdict/heuristics.py` | `BehavioralHeuristicsEngine` — credential dictionaries, UA patterns, command/web signatures. |
+| `verdict/engine.py` | Orchestrates telemetry → heuristics → fusion → persistence → alerting. |
 
 ### 5. Data & Query Layer
-- **Central Storage**: Persistent SQLite database storing flow records, decoy interactions, heuristic matches, and final verdicts.
-- **REST API (`antlion.query.api`)**: Clean, OpenAPI-documented FastAPI endpoints for querying recent verdicts, IP intelligence, attack trends, and summary metrics.
-- **CLI (`antlion query`)**: Terminal command-line tool for security analysts to inspect real-time alerts, search by IP, and export forensic JSON reports.
+
+| Module | Purpose |
+|---|---|
+| `storage/database.py` | Thread-safe SQLite persistence and aggregation. |
+| `intel/enricher.py` | IP geolocation/ASN enrichment with offline fallback. |
+| `query/api.py` | FastAPI REST interface (API-key protected). |
+| `query/dashboard.py` | Self-contained SOC dashboard (charts, threat feed, IP dossier). |
+| `alerts/dispatcher.py` | CEF logging plus Slack/Discord/generic webhook delivery. |
+
+### Scoring, briefly
+
+```
+raw   = w_decoy·1.0 + w_ml·ml_conf + w_heur·heur_score
+final = clamp(depth_multiplier · raw + congruence_bonus, 0.35, 1.0)
+```
+
+`heur_score` uses probabilistic saturation, `1 − Π(1 − scoreᵢ)`, so weak rules cannot sum to certainty. `congruence_bonus` rewards independently-derived signals that agree. When ML is absent, its weight is redistributed to the remaining signals.
 
 ---
 
-## Cloud Deployment & Isolation Guide (EC2 Setup)
+## Quick Start
 
-When deploying Antlion in a public cloud provider such as AWS EC2, you must follow strict defensive isolation protocols to ensure the honeypot cannot be pivoted through or compromised:
-
-### 1. Isolated VPC Architecture
-- Deploy the honeypot instance inside a dedicated, isolated Virtual Private Cloud (VPC) with **no peering connections**, **no transit gateways**, and **no route to internal/corporate VPCs**.
-- Use a dedicated Subnet with an Internet Gateway (IGW) solely for inbound honeypot traffic.
-
-### 2. Locked-Down Security Group
-- **Inbound Rules**:
-  - `TCP 2222` (or public `22` redirected via iptables) -> `0.0.0.0/0` (Decoy SSH)
-  - `TCP 8080` (or public `80`/`443`) -> `0.0.0.0/0` (Decoy Web Admin)
-  - `TCP <custom-admin-port>` -> `<YOUR_OFFICE_OR_VPN_IP>/32` ONLY (Management access)
-- **Outbound Rules (CRITICAL)**:
-  - **Restrict or drop all outbound connections** except essential OS security updates and NTP.
-  - Deny outbound traffic to private RFC 1918 ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) and AWS metadata service (`169.254.169.254`).
-  - Block outbound SMTP (`TCP 25, 465, 587`) and DDoS amplification ports to ensure attackers cannot use the decoy as an offensive zombie.
-
-### 3. Identity and Credential Isolation
-- Attach **NO IAM Roles** or IAM instance profiles to the EC2 instance.
-- Do NOT store cloud credentials, API tokens, production SSH private keys, or sensitive customer data on the machine.
-- Decoy credentials presented in the fake filesystem are strictly honey-tokens that trigger alerts if used elsewhere.
-
----
-
-## Safe Defensive Operating Instructions
-
-1. **Strictly Passive Monitoring**:
-   Antlion is engineered exclusively for observation and defensive intelligence gathering. It does not perform active vulnerability scanning, outbound exploitation, or counter-attacks.
-2. **Containment & Sandboxing**:
-   The interactive shell decoy operates within an in-memory virtual state machine. Keystrokes and downloaded malware URLs are recorded, but commands are never executed on the host operating system kernel.
-3. **Log Sanitization**:
-   Pay attention to log volume and rotate PCAP captures frequently to avoid disk exhaustion during denial-of-service probes.
-
----
-
-## Getting Started & Installation
-
-### Requirements
-- Python 3.10+
-- Linux (Ubuntu/Debian recommended for systemd capture) or macOS (development/testing)
-- `tcpdump` / `libpcap` (for live packet capture)
-
-### Installation
 ```bash
 git clone https://github.com/Akshit99999/AntLion.git
 cd AntLion
-pip install -e .
-```
 
-### Running the Decoys
-```bash
-# Start Web Decoy (default port 8080)
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,full]"
+
+# Optional: configure alerting and API auth
+cp .env.example .env && $EDITOR .env
+
+# Train a flow classifier (optional — a baseline ships in code)
+antlion train --data /path/to/cicids2017.csv
+
+# Run the pieces (separate terminals)
 antlion decoy web --port 8080
-
-# Start SSH Decoy (default port 2222)
 antlion decoy ssh --port 2222
-```
-
-### Starting the Query API & Interactive SOC Dashboard
-```bash
 antlion api --port 8000
-# 🖥️ Interactive SOC Console Dashboard: http://localhost:8000/
-# 📖 OpenAPI REST Documentation:       http://localhost:8000/docs
 ```
 
-### Starting the Live Capture & Flow-Decoy Correlator
+Open <http://localhost:8000> for the SOC dashboard.
+
+---
+
+## Configuration
+
+Every setting is read from the environment via `AntlionConfig.from_env()`. Unset variables fall back to safe defaults, and malformed values are ignored rather than raising — a bad environment never prevents decoys from starting.
+
+### Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `ANTLION_HOME` | `~/.antlion` | Base directory for database, pcaps, and models. |
+| `ANTLION_DB_PATH` | `<home>/antlion.db` | Explicit SQLite path. **Overrides** `ANTLION_HOME`. |
+| `ANTLION_DISCORD_WEBHOOK` | — | Discord webhook URL. |
+| `ANTLION_SLACK_WEBHOOK` | — | Slack incoming webhook URL. |
+| `ANTLION_WEBHOOK_URLS` | — | Comma-separated additional targets. |
+| `ANTLION_ALERT_SEVERITY` | `HIGH` | Minimum severity to dispatch (`LOW`/`MEDIUM`/`HIGH`/`CRITICAL`). |
+| `ANTLION_API_KEY` | — | Shared secret for `/api/v1`. **Unset = unauthenticated.** |
+| `ANTLION_CORS_ORIGINS` | localhost origins | Comma-separated CORS allowlist. |
+| `ANTLION_TRUST_PROXY` | `false` | Honour `X-Forwarded-For` for attribution. |
+| `ANTLION_WEB_PORT` | `8080` | Web decoy port. |
+| `ANTLION_SSH_PORT` | `2222` | SSH decoy port. |
+| `ANTLION_TELNET_PORT` | `2323` | Telnet decoy port. |
+| `ANTLION_API_PORT` | `8000` | Query API port. |
+
+Inspect the effective configuration:
+
 ```bash
-# Ingest live packets in sliding-window batches correlated directly to decoy events
-python3 -c "
-from antlion.capture.live import LiveCapturePipeline
-from antlion.verdict.engine import VerdictEngine
-pipeline = LiveCapturePipeline(verdict_engine=VerdictEngine())
-print('Live Capture & Correlation Engine Ready.')
-"
+antlion info
 ```
 
-### Real-Time Alerts & Webhooks (Slack / Discord / CEF)
-Antlion automatically formats and streams `CRITICAL` and `HIGH` severity verdicts to configured webhooks or SIEM collectors:
+### Programmatic use
+
 ```python
-from antlion.alerts.dispatcher import AlertDispatcher
-from antlion.core.types import SeverityLevel
+from antlion.core.config import AntlionConfig
+from antlion.verdict.engine import VerdictEngine
+from antlion.storage.database import AntlionDatabase
 
-dispatcher = AlertDispatcher(
-    webhook_urls=["https://discord.com/api/webhooks/..."],
-    min_severity=SeverityLevel.HIGH
-)
+config = AntlionConfig.from_env()
+engine = VerdictEngine(config=config, db=AntlionDatabase(config.get_db_path()))
 ```
+
+---
+
+## CLI Reference
+
+```
+antlion decoy web  [--host HOST] [--port PORT]
+antlion decoy ssh  [--host HOST] [--port PORT] [--hostname NAME]
+antlion api        [--host HOST] [--port PORT]
+antlion query verdicts [--limit N] [--ip IP] [--severity S] [--json]
+antlion query intel   <IP> [--json]
+antlion query stats   [--json]
+antlion train      [--data CSV] [--save-path PATH]
+antlion info
+```
+
+---
+
+## REST API
+
+Data routes require `X-API-Key` (or `Authorization: Bearer …`) when `ANTLION_API_KEY` is set. `/api/v1/health` and the dashboard stay public.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/` `/dashboard` | No | SOC dashboard |
+| `GET` | `/api/v1/health` | No | Health check |
+| `GET` | `/api/v1/verdicts` | Yes | List verdicts (`limit`, `source_ip`, `severity`, `attack_type`) |
+| `GET` | `/api/v1/verdicts/{id}` | Yes | Single verdict |
+| `GET` | `/api/v1/intel/{ip}` | Yes | Forensic dossier and timeline |
+| `GET` | `/api/v1/stats` | Yes | Aggregated statistics |
+| `GET` | `/docs` | — | OpenAPI UI |
+
+```bash
+curl -H "X-API-Key: $ANTLION_API_KEY" http://localhost:8000/api/v1/stats
+```
+
+---
+
+## Security Model
+
+### What Antlion collects
+
+Captured passwords and command history are stored **in plaintext**. This is deliberate — in a honeypot the credentials *are* the evidence, and hashing them would destroy their value as forensic artifacts. The consequence is that the query API must be treated as a secrets-bearing service:
+
+- Always set `ANTLION_API_KEY`.
+- Keep the API bound to `127.0.0.1` or behind a VPN unless the key is set.
+- Never use a wildcard CORS origin.
+
+### Deployment guidance
+
+- Run decoys in an isolated VLAN or container network with no route to production.
+- Decoys are **not** hardened services. Never place real credentials on the host.
+- Canary tokens served by the web decoy (`.env`, AWS IMDS) are fake by design and are safe to expose.
+- Capture requires elevated privileges (`tcpdump`/`AF_PACKET`). Prefer a dedicated network namespace or container with only the capture capability granted.
+
+### Known limitations
+
+- The SSH/Telnet decoy emulates a plain protocol; it does not implement real SSH key exchange.
+- `prune_stale_flows()` must be invoked by an external scheduler for long-running live capture.
+- The database grows unbounded without an external retention job.
+
+---
+
+## Development
+
+```bash
+pip install -e ".[dev,full]"
+
+python -m pytest tests/ -q            # 59 tests
+python -m pytest tests/ -q -k hardening
+
+ruff check antlion tests              # if available
+```
+
+### Layout
+
+```
+antlion/
+  core/         types, enums, configuration
+  decoys/       web + ssh/telnet honeypots
+  capture/      flow extraction and live correlation
+  classification/ ML inference, anomaly detection, benchmarking
+  verdict/      scoring fusion, heuristics, orchestration
+  intel/        IP enrichment
+  alerts/       SIEM/webhook dispatch
+  storage/      SQLite persistence
+  query/        REST API, CLI query layer, dashboard
+tests/
+```
+
+### Contributing
+
+Branch per change, Conventional Commit messages, and open a PR. CI must be green before merge.
+
+---
+
+## Deployment
+
+```bash
+cp .env.example .env    # set ANTLION_API_KEY and webhooks
+docker compose up -d
+```
+
+| Service | Port | Role |
+|---|---|---|
+| `antlion-api` | 8000 | REST API + dashboard |
+| `antlion-web-decoy` | 8080 | Web honeypot |
+| `antlion-ssh-decoy` | 2222 | SSH honeypot |
+
+All three share the `antlion-data` volume holding the SQLite database.
+
+---
+
+## Troubleshooting
+
+**No alerts are firing.** Check `antlion info` — `Alert Webhooks` must be non-zero. Webhooks are read from the environment; if you started Docker Compose without a populated `.env`, the variables resolve to empty strings.
+
+**`/api/v1/*` returns 401.** Send `X-API-Key`, or unset `ANTLION_API_KEY` to disable auth (localhost only).
+
+**Dashboard is empty.** Decoys write to the database at `ANTLION_DB_PATH`. Confirm the API and decoy containers share the same volume and that the path resolves identically in both.
+
+**A legitimate scan is classified as exploitation.** Interaction-depth heuristics are tuned to be conservative. Adjust `ScoringWeights.depth_weights` in `core/config.py` and add a regression test.
 
 ---
 
 ## License
-MIT License. Developed for defensive cybersecurity research and threat intelligence.
+
+MIT — see [LICENSE](LICENSE).
