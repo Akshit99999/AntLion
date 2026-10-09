@@ -29,17 +29,72 @@ class LiveCapturePipeline:
         classifier: Optional[FlowClassifier] = None,
         anomaly_detector: Optional[FlowAnomalyDetector] = None,
         correlation_window_sec: float = 30.0,
+        max_tracked_flows: int = 50000,
+        prune_interval_sec: float = 30.0,
+        autostart_pruner: bool = True,
+        correlation_max_age_sec: float = 300.0,
     ):
         self.verdict_engine = verdict_engine
         self.classifier = classifier or FlowClassifier()
         self.anomaly_detector = anomaly_detector or FlowAnomalyDetector()
         self.correlation_window_sec = correlation_window_sec
 
+        # Upper bound on retained flow state. A public-facing capture sees
+        # unbounded distinct 5-tuples, so without a cap the extractor and the
+        # per-IP cache grow until the process is OOM-killed.
+        self.max_tracked_flows = max_tracked_flows
+        # Age bound for per-IP correlation entries, independent of the flow
+        # sliding window.
+        self._cache_max_age_sec = correlation_max_age_sec
+
         self.extractor = FlowFeatureExtractor()
         # Maps src_ip -> latest FlowRecord
         self._ip_flow_cache: Dict[str, FlowRecord] = {}
         self._lock = threading.Lock()
         self._is_running = False
+
+        self._prune_interval_sec = prune_interval_sec
+        self._stop_event = threading.Event()
+        self._pruner_thread: Optional[threading.Thread] = None
+
+        if autostart_pruner:
+            self.start_pruner()
+
+    def start_pruner(self) -> None:
+        """Starts the background flow-pruning thread.
+
+        Previously prune_stale_flows() had no caller, so a long-running capture
+        leaked flow state indefinitely.
+        """
+        if self._pruner_thread and self._pruner_thread.is_alive():
+            return
+
+        self._stop_event.clear()
+
+        def _loop() -> None:
+            while not self._stop_event.wait(self._prune_interval_sec):
+                try:
+                    self.prune_stale_flows()
+                except Exception as e:  # never let pruning kill the pipeline
+                    logger.warning("Flow pruning failed: %s", e)
+
+        self._pruner_thread = threading.Thread(
+            target=_loop, daemon=True, name="AntlionFlowPruner"
+        )
+        self._pruner_thread.start()
+        logger.info(
+            "Flow pruner started (interval=%.0fs window=%.0fs max_flows=%d)",
+            self._prune_interval_sec,
+            self.correlation_window_sec,
+            self.max_tracked_flows,
+        )
+
+    def stop_pruner(self) -> None:
+        """Signals the pruning thread to exit."""
+        self._stop_event.set()
+        if self._pruner_thread and self._pruner_thread.is_alive():
+            self._pruner_thread.join(timeout=5.0)
+        self._pruner_thread = None
 
     def ingest_packet(self, pkt: PacketMetadata) -> None:
         """Ingests a packet, updates flow accumulator, and refreshes IP cache."""
@@ -59,6 +114,17 @@ class LiveCapturePipeline:
                     features=features,
                 )
                 self._ip_flow_cache[pkt.src_ip] = rec
+
+                # Enforce the cap on ingest, not only on the prune timer.
+                # A burst between prunes must not be able to balloon memory.
+                overflow = len(self.extractor.flows) - self.max_tracked_flows
+                if overflow > 0:
+                    ordered = sorted(
+                        self.extractor.flows.items(),
+                        key=lambda kv: kv[1].last_time or 0.0,
+                    )
+                    for k, _ in ordered[:overflow]:
+                        del self.extractor.flows[k]
 
     def correlate_and_process_decoy(self, event: DecoyEvent) -> Verdict:
         """Correlates an incoming decoy interaction with concurrent network flow features."""
@@ -88,15 +154,73 @@ class LiveCapturePipeline:
             ml_prediction=ml_pred,
         )
 
-    def prune_stale_flows(self) -> None:
-        """Removes expired flows beyond the sliding window."""
+    def prune_stale_flows(self) -> int:
+        """Removes flows outside the sliding window and enforces the size cap.
+
+        Prunes both the extractor's flow accumulators and the per-IP
+        correlation cache. Returns the number of entries removed.
+        """
+        removed = 0
+
         with self._lock:
             now = time.time()
             cutoff = now - self.correlation_window_sec
-            to_remove = []
-            for k, flow in self.extractor.flows.items():
-                if flow.last_time and flow.last_time < cutoff:
-                    to_remove.append(k)
 
-            for k in to_remove:
+            stale = [
+                k
+                for k, flow in self.extractor.flows.items()
+                if flow.last_time and flow.last_time < cutoff
+            ]
+            for k in stale:
                 del self.extractor.flows[k]
+                removed += 1
+
+            # Evict per-IP entries whose backing flow is gone, otherwise the
+            # cache outlives the flows it references.
+            live_ips = {
+                (flow.fwd_src_ip, flow.fwd_dst_ip)
+                for flow in self.extractor.flows.values()
+            }
+            stale_ips = [
+                ip
+                for ip in self._ip_flow_cache
+                if (ip, self._ip_flow_cache[ip].dst_ip) not in live_ips
+            ]
+            for ip in stale_ips:
+                del self._ip_flow_cache[ip]
+                removed += 1
+
+            # Belt-and-braces: evict cache entries older than a generous bound
+            # even if a matching accumulator still lingers. Correlation against
+            # a many-minute-old flow produces misleading verdicts anyway.
+            cache_cutoff = now - max(self.correlation_window_sec, self._cache_max_age_sec)
+            aged = [
+                ip
+                for ip, rec in self._ip_flow_cache.items()
+                if rec.timestamp and rec.timestamp.timestamp() < cache_cutoff
+            ]
+            for ip in aged:
+                del self._ip_flow_cache[ip]
+                removed += 1
+
+            # Hard cap: evict the oldest flows if still over budget. Without
+            # this a high-cardinality scan (unique src/dst/port per packet)
+            # grows unbounded regardless of the sliding window.
+            overflow = len(self.extractor.flows) - self.max_tracked_flows
+            if overflow > 0:
+                ordered = sorted(
+                    self.extractor.flows.items(),
+                    key=lambda kv: kv[1].last_time or 0.0,
+                )
+                for k, _ in ordered[:overflow]:
+                    del self.extractor.flows[k]
+                    removed += 1
+
+        if removed:
+            logger.info("Pruned %d stale flow entries", removed)
+        return removed
+
+    def tracked_state_size(self) -> Tuple[int, int]:
+        """Returns (flow accumulators, per-IP cache entries)."""
+        with self._lock:
+            return len(self.extractor.flows), len(self._ip_flow_cache)

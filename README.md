@@ -279,11 +279,24 @@ Captured passwords and command history are stored **in plaintext**. This is deli
 - Canary tokens served by the web decoy (`.env`, AWS IMDS) are fake by design and are safe to expose.
 - Capture requires elevated privileges (`tcpdump`/`AF_PACKET`). Prefer a dedicated network namespace or container with only the capture capability granted.
 
+### Resource bounds
+
+Because decoys face the open internet, every unbounded structure is capped:
+
+| Bound | Default | Purpose |
+|---|---|---|
+| SSH decoy `max_connections` | 200 | Excess connections are refused rather than spawning threads. Slots are reclaimed when a session ends. |
+| SSH decoy `idle_timeout` | 60s | Idle sessions cannot be held open indefinitely. |
+| Live capture `max_tracked_flows` | 50000 | Enforced on ingest *and* on prune, so a burst between prunes cannot balloon memory. |
+| Live capture pruner | 30s | Background thread; pruning runs automatically. |
+| Alert dedup window | 300s | See [Alert Suppression](#6-alert-suppression). |
+
+`LiveCapturePipeline` starts its pruner on construction; call `stop_pruner()` on shutdown.
+
 ### Known limitations
 
 - The SSH/Telnet decoy emulates a plain protocol; it does not implement real SSH key exchange.
-- `prune_stale_flows()` must be invoked by an external scheduler for long-running live capture.
-- The database grows unbounded without an external retention job.
+- The database grows unbounded without a retention job (see `ANTLION_RETENTION_DAYS`).
 
 ---
 
