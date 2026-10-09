@@ -325,8 +325,31 @@ class AntlionDatabase:
             # Top attacker IPs
             cursor.execute(
                 """
-                SELECT source_ip, COUNT(*) as count, MAX(severity) as peak_severity, MAX(confidence) as max_conf
-                FROM verdicts
+                SELECT
+                    source_ip,
+                    COUNT(*) as count,
+                    MAX(confidence) as max_conf,
+                    -- MAX() on a TEXT column sorts lexicographically, so
+                    -- "MEDIUM" would beat "HIGH". Rank explicitly in a
+                    -- subquery, then map the winning rank back to a label.
+                    CASE MAX(sev_rank)
+                        WHEN 4 THEN 'CRITICAL'
+                        WHEN 3 THEN 'HIGH'
+                        WHEN 2 THEN 'MEDIUM'
+                        ELSE 'LOW'
+                    END AS peak_severity
+                FROM (
+                    SELECT
+                        source_ip,
+                        confidence,
+                        CASE severity
+                            WHEN 'CRITICAL' THEN 4
+                            WHEN 'HIGH'     THEN 3
+                            WHEN 'MEDIUM'   THEN 2
+                            ELSE 1
+                        END AS sev_rank
+                    FROM verdicts
+                )
                 GROUP BY source_ip
                 ORDER BY count DESC
                 LIMIT 10;

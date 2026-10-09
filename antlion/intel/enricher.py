@@ -99,7 +99,12 @@ class IPThreatEnricher:
             return IPProfile(ip=ip_str, country="External Internet", risk_score=0.50)
 
         try:
-            url = f"http://ip-api.com/json/{ip_str}?fields=status,message,country,countryCode,city,isp,org,as,hosting,proxy"
+            # HTTPS only: plaintext would leak attacker IPs and let a MITM
+            # poison ASN/risk enrichment.
+            url = (
+                f"https://ip-api.com/json/{ip_str}"
+                "?fields=status,message,country,countryCode,city,isp,org,as,hosting,proxy"
+            )
             req = urllib.request.Request(
                 url, headers={"User-Agent": "Antlion-Threat-Intel/0.1.0"}
             )

@@ -101,7 +101,13 @@ class BehavioralHeuristicsEngine:
         ),
         (
             "CMD_SYSTEM_RECON",
-            re.compile(r"(uname\s+-[amrv]|cat\s+/proc/cpuinfo|ifconfig|ip\s+addr|whoami|id|uptime|lscpu)", re.IGNORECASE),
+            # 'id' is anchored on word boundaries: without this the bare
+            # alternative matches inside innocent words like 'vid' or 'gridctl'.
+            re.compile(
+                r"(uname\s+-[amrv]|cat\s+/proc/cpuinfo|ifconfig|ip\s+addr|whoami"
+                r"|(?<![a-z0-9_-])id(?![a-z0-9_-])|uptime|lscpu)",
+                re.IGNORECASE,
+            ),
             0.60,
             SeverityLevel.MEDIUM,
             "Host environment, architecture, and network discovery",

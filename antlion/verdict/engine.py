@@ -42,7 +42,30 @@ class VerdictEngine:
             burst_threshold=self.config.heuristics.burst_threshold_per_window,
         )
         self.scorer = MultiSignalScorer(weights=self.config.scoring)
-        self.alerts = alert_dispatcher or AlertDispatcher()
+        self.alerts = alert_dispatcher or self._build_default_dispatcher()
+
+    def _build_default_dispatcher(self) -> AlertDispatcher:
+        """Constructs an AlertDispatcher from configured webhook settings."""
+        try:
+            min_sev = SeverityLevel(self.config.min_alert_severity.upper())
+        except (AttributeError, ValueError):
+            min_sev = SeverityLevel.HIGH
+
+        webhook_urls = list(self.config.webhook_urls)
+        if webhook_urls:
+            logger.info(
+                "AlertDispatcher configured with %d webhook target(s), min severity %s",
+                len(webhook_urls),
+                min_sev.value,
+            )
+        else:
+            logger.warning(
+                "No alert webhooks configured (ANTLION_DISCORD_WEBHOOK / "
+                "ANTLION_SLACK_WEBHOOK / ANTLION_WEBHOOK_URLS). Alerts will be "
+                "logged as CEF but not delivered externally."
+            )
+
+        return AlertDispatcher(webhook_urls=webhook_urls, min_severity=min_sev)
 
     def process_decoy_event(
         self,

@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from antlion.core.config import DEFAULT_CONFIG, AntlionConfig
 from antlion.core.types import (
     DecoyEvent,
     DecoyServiceType,
@@ -63,8 +65,12 @@ LOGIN_HTML_PAGE = """<!DOCTYPE html>
 """
 
 
-def create_web_decoy_app(verdict_engine: Optional[VerdictEngine] = None) -> FastAPI:
+def create_web_decoy_app(
+    verdict_engine: Optional[VerdictEngine] = None,
+    config: Optional[AntlionConfig] = None,
+) -> FastAPI:
     """Builds FastAPI web honeypot application with full request telemetry capture."""
+    config = config or DEFAULT_CONFIG
     app = FastAPI(
         title="InfraOps Internal Admin Console",
         description="Internal cluster node management gateway",
@@ -76,14 +82,23 @@ def create_web_decoy_app(verdict_engine: Optional[VerdictEngine] = None) -> Fast
     @app.middleware("http")
     async def capture_request_metadata(request: Request, call_next):
         """Intercepts every incoming HTTP request, logs metadata, and evaluates verdict."""
-        # 1. Extract client IP (respecting proxy headers)
+        # 1. Extract client IP. X-Forwarded-For is only trusted when explicitly
+        # enabled (ANTLION_TRUST_PROXY), otherwise any client could spoof the
+        # source IP and poison attribution/dossiers. The real peer address is
+        # always retained for forensics.
+        peer_ip = request.client.host if request.client else "127.0.0.1"
+        peer_port = request.client.port if request.client else 0
         forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            client_ip = forwarded.split(",")[0].strip()
-        else:
-            client_ip = request.client.host if request.client else "127.0.0.1"
 
-        client_port = request.client.port if request.client else 0
+        if forwarded:
+            claimed_ip = forwarded.split(",")[0].strip()
+        else:
+            claimed_ip = None
+
+        trust_proxy = bool(config.trust_proxy_headers) if config else False
+        client_ip = claimed_ip if (trust_proxy and claimed_ip) else peer_ip
+        client_port = peer_port
+
         path = request.url.path
         method = request.method
         headers = dict(request.headers)
@@ -101,10 +116,44 @@ def create_web_decoy_app(verdict_engine: Optional[VerdictEngine] = None) -> Fast
         # 3. Determine interaction depth
         query_str = str(request.url.query)
         full_path = f"{path}?{query_str}" if query_str else path
-        is_exploit = any(
-            x in full_path.lower() or (payload_str and x in payload_str.lower())
-            for x in ["union", "select", "../", "..\\", "sleep(", "whoami", "id", "/.env", "eval"]
+
+        haystack = f"{full_path}\n{payload_str or ''}".lower()
+
+        # Multi-word patterns must be checked as-is. Bare tokens are matched on
+        # word boundaries so innocent paths like /invalid, /grid or
+        # /api/v1/video are not mistaken for exploitation.
+        exploit_phrases = (
+            "union select",
+            "union+select",
+            "union%20select",
+            "union all",
+            "../",
+            "..\\",
+            "/.env",
+            "/.git/",
+            "sleep(",
+            "waitfor delay",
+            "benchmark(",
+            "whoami",
+            "<?php",
+            "<script",
+            "${jndi:",
+            "eval(",
+            "exec(",
+            "system(",
+            "/etc/passwd",
+            "/etc/shadow",
         )
+        exploit_word_tokens = ("id", "select", "eval", "exec", "cmd", "ping", "nc")
+
+        is_exploit = any(phrase in haystack for phrase in exploit_phrases)
+
+        if not is_exploit:
+            # Word-boundary match for short ambiguous tokens.
+            is_exploit = re.search(
+                r"(?<![a-z0-9_-])(?:" + "|".join(exploit_word_tokens) + r")(?![a-z0-9_-])",
+                haystack,
+            ) is not None
 
         depth = (
             InteractionDepth.WEB_EXPLOIT_PAYLOAD
@@ -127,9 +176,16 @@ def create_web_decoy_app(verdict_engine: Optional[VerdictEngine] = None) -> Fast
                 raw_metadata={
                     "query_string": query_str,
                     "url": str(request.url),
+                    "peer_ip": peer_ip,
+                    "peer_port": peer_port,
+                    "claimed_xff": claimed_ip,
+                    "xff_trusted": trust_proxy,
                 },
             )
-            verdict_engine.process_decoy_event(event)
+            # POST /login is captured by its own handler below so a single
+            # login attempt yields exactly one verdict.
+            if not (method == "POST" and path == "/login"):
+                verdict_engine.process_decoy_event(event)
 
         # 5. Proceed to endpoint execution
         response = await call_next(request)
@@ -153,11 +209,14 @@ def create_web_decoy_app(verdict_engine: Optional[VerdictEngine] = None) -> Fast
         username = form_data.get("username", "")
         password = form_data.get("password", "")
 
-        client_ip = (
-            request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-            or (request.client.host if request.client else "127.0.0.1")
-        )
-        client_port = request.client.port if request.client else 0
+        peer_ip = request.client.host if request.client else "127.0.0.1"
+        peer_port = request.client.port if request.client else 0
+        forwarded = request.headers.get("x-forwarded-for")
+        claimed_ip = forwarded.split(",")[0].strip() if forwarded else None
+
+        trust_proxy = bool(config.trust_proxy_headers) if config else False
+        client_ip = claimed_ip if (trust_proxy and claimed_ip) else peer_ip
+        client_port = peer_port
 
         # Create specific authentication attempt event
         if verdict_engine:
@@ -171,6 +230,12 @@ def create_web_decoy_app(verdict_engine: Optional[VerdictEngine] = None) -> Fast
                 http_method="POST",
                 http_path="/login",
                 http_headers=dict(request.headers),
+                raw_metadata={
+                    "peer_ip": peer_ip,
+                    "peer_port": peer_port,
+                    "claimed_xff": claimed_ip,
+                    "xff_trusted": trust_proxy,
+                },
             )
             verdict_engine.process_decoy_event(auth_event)
 

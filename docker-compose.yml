@@ -33,10 +33,13 @@ services:
       - ANTLION_SLACK_WEBHOOK=${ANTLION_SLACK_WEBHOOK:-}
       - ANTLION_ALERT_SEVERITY=${ANTLION_ALERT_SEVERITY:-HIGH}
       - ANTLION_DB_PATH=/root/.antlion/antlion.db
+      - ANTLION_API_KEY=${ANTLION_API_KEY:-}
+      - ANTLION_CORS_ORIGINS=${ANTLION_CORS_ORIGINS:-http://localhost:8000}
+      - ANTLION_TRUST_PROXY=${ANTLION_TRUST_PROXY:-false}
     networks:
       - antlion-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -55,6 +58,9 @@ services:
       - ANTLION_SLACK_WEBHOOK=${ANTLION_SLACK_WEBHOOK:-}
       - ANTLION_ALERT_SEVERITY=${ANTLION_ALERT_SEVERITY:-HIGH}
       - ANTLION_DB_PATH=/root/.antlion/antlion.db
+      - ANTLION_API_KEY=${ANTLION_API_KEY:-}
+      - ANTLION_CORS_ORIGINS=${ANTLION_CORS_ORIGINS:-http://localhost:8000}
+      - ANTLION_TRUST_PROXY=${ANTLION_TRUST_PROXY:-false}
     networks:
       - antlion-net
     depends_on:
@@ -74,6 +80,9 @@ services:
       - ANTLION_SLACK_WEBHOOK=${ANTLION_SLACK_WEBHOOK:-}
       - ANTLION_ALERT_SEVERITY=${ANTLION_ALERT_SEVERITY:-HIGH}
       - ANTLION_DB_PATH=/root/.antlion/antlion.db
+      - ANTLION_API_KEY=${ANTLION_API_KEY:-}
+      - ANTLION_CORS_ORIGINS=${ANTLION_CORS_ORIGINS:-http://localhost:8000}
+      - ANTLION_TRUST_PROXY=${ANTLION_TRUST_PROXY:-false}
     networks:
       - antlion-net
     depends_on:
