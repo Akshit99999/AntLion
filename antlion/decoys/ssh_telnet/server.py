@@ -7,9 +7,10 @@ from __future__ import annotations
 import logging
 import socket
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from antlion.core.types import (
     DecoyEvent,
@@ -33,15 +34,34 @@ class InteractiveDecoyServer:
         service_type: DecoyServiceType = DecoyServiceType.SSH,
         hostname: Optional[str] = None,
         verdict_engine: Optional[VerdictEngine] = None,
+        max_connections: int = 200,
+        idle_timeout: float = 60.0,
     ):
         self.host = host
         self.port = port
         self.service_type = service_type
         self.hostname = hostname or CustomBannerGenerator.get_hostname()
         self.verdict_engine = verdict_engine
+
+        # A public decoy is scanned continuously. Without a cap, each inbound
+        # connection spawns a thread that is never reclaimed, so an attacker
+        # opening thousands of idle sessions exhausts memory and file
+        # descriptors.
+        self.max_connections = max_connections
+        self.idle_timeout = idle_timeout
+
         self._server_sock: Optional[socket.socket] = None
         self._is_running = False
-        self._threads: List[threading.Thread] = []
+        self._active_threads: Set[threading.Thread] = set()
+        self._active_sockets: Set[socket.socket] = set()
+        self._lock = threading.Lock()
+        self._total_rejected = 0
+
+    @property
+    def active_connections(self) -> int:
+        """Currently open decoy sessions."""
+        with self._lock:
+            return len(self._active_threads)
 
     def start(self, blocking: bool = False) -> None:
         """Starts the decoy listener."""
@@ -66,16 +86,33 @@ class InteractiveDecoyServer:
                 target=self._accept_loop, daemon=True, name="DecoyAcceptLoop"
             )
             accept_thread.start()
-            self._threads.append(accept_thread)
 
     def stop(self) -> None:
-        """Stops the listener and closes active sockets."""
+        """Stops the listener and closes every active session socket."""
         self._is_running = False
+
         if self._server_sock:
             try:
                 self._server_sock.close()
             except Exception:
                 pass
+
+        # Close live session sockets so handler threads unblock and exit
+        # instead of lingering until their socket timeout.
+        with self._lock:
+            sockets = list(self._active_sockets)
+            self._active_sockets.clear()
+        for sock in sockets:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+        logger.info("Decoy stopped")
 
     def _accept_loop(self) -> None:
         while self._is_running:
@@ -83,21 +120,47 @@ class InteractiveDecoyServer:
                 client_sock, client_addr = self._server_sock.accept()
                 client_ip, client_port = client_addr[0], client_addr[1]
 
+                with self._lock:
+                    at_capacity = len(self._active_threads) >= self.max_connections
+
+                if at_capacity:
+                    # Over capacity: drop immediately rather than queueing.
+                    # Answering would also let an attacker hold sessions open
+                    # at the OS level even though we never spawn a thread.
+                    self._total_rejected += 1
+                    try:
+                        client_sock.close()
+                    except Exception:
+                        pass
+                    continue
+
+                with self._lock:
+                    self._active_sockets.add(client_sock)
+
                 client_thread = threading.Thread(
                     target=self._handle_client,
                     args=(client_sock, client_ip, client_port),
                     daemon=True,
                 )
+                with self._lock:
+                    self._active_threads.add(client_thread)
                 client_thread.start()
-                self._threads.append(client_thread)
+
+            except OSError:
+                if not self._is_running:
+                    break
+                # A transient accept failure should not spin the loop hot.
+                time.sleep(0.05)
             except Exception:
                 if not self._is_running:
                     break
+                logger.debug("Accept loop error", exc_info=True)
+                time.sleep(0.05)
 
     def _handle_client(
         self, sock: socket.socket, client_ip: str, client_port: int
     ) -> None:
-        sock.settimeout(60.0)
+        sock.settimeout(self.idle_timeout)
         session_id = str(uuid.uuid4())
         fs = FakeFilesystem(hostname=self.hostname)
         entered_commands: List[str] = []
@@ -198,6 +261,11 @@ class InteractiveDecoyServer:
         except (socket.timeout, socket.error):
             pass
         finally:
+            # Reclaim the session's slot and socket so the connection cap and
+            # file-descriptor budget stay accurate.
+            with self._lock:
+                self._active_sockets.discard(sock)
+                self._active_threads.discard(threading.current_thread())
             try:
                 sock.close()
             except Exception:
