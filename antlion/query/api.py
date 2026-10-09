@@ -15,7 +15,9 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from antlion.core.config import DEFAULT_CONFIG, AntlionConfig
 from antlion.core.metrics import REGISTRY, set_database_gauges
 from antlion.query.dashboard import DASHBOARD_HTML
+from antlion.query.export import export_verdicts
 from antlion.storage.database import AntlionDatabase
+from antlion.storage.prune import RetentionManager
 
 logger = logging.getLogger("antlion.query.api")
 
@@ -154,6 +156,86 @@ def create_query_api(
     ) -> Dict[str, Any]:
         """Retrieves comprehensive forensic dossier and interaction timeline for a given IP."""
         return database.get_ip_intel(source_ip)
+
+    @app.get(
+        "/api/v1/export/verdicts.csv",
+        tags=["Export"],
+        response_class=PlainTextResponse,
+    )
+    async def export_verdicts_csv(
+        limit: int = Query(1000, ge=1, le=10000),
+        source_ip: Optional[str] = Query(None),
+        severity: Optional[str] = Query(None),
+        _auth: None = Depends(require_api_key),
+    ) -> str:
+        """Exports verdicts as flattened CSV for analyst and pipeline use."""
+        return export_verdicts(
+            db=database, fmt="csv", limit=limit, source_ip=source_ip, severity=severity
+        )
+
+    @app.get(
+        "/api/v1/export/verdicts.json",
+        tags=["Export"],
+        response_class=PlainTextResponse,
+    )
+    async def export_verdicts_json(
+        limit: int = Query(1000, ge=1, le=10000),
+        source_ip: Optional[str] = Query(None),
+        _auth: None = Depends(require_api_key),
+    ) -> str:
+        """Exports verdicts as JSON."""
+        return export_verdicts(
+            db=database, fmt="json", limit=limit, source_ip=source_ip
+        )
+
+    @app.get(
+        "/api/v1/export/stix",
+        tags=["Export"],
+        response_class=PlainTextResponse,
+    )
+    async def export_verdicts_stix(
+        limit: int = Query(1000, ge=1, le=10000),
+        source_ip: Optional[str] = Query(None),
+        _auth: None = Depends(require_api_key),
+    ) -> str:
+        """Exports verdicts as a STIX 2.1 bundle for threat-intel platforms."""
+        return export_verdicts(
+            db=database, fmt="stix", limit=limit, source_ip=source_ip
+        )
+
+    @app.get(
+        "/api/v1/retention/status",
+        tags=["Maintenance"],
+    )
+    async def retention_status(
+        _auth: None = Depends(require_api_key),
+    ) -> Dict[str, Any]:
+        """Reports how many records the next retention sweep would delete."""
+        manager = RetentionManager(
+            db=database, retention_days=config.retention_days
+        )
+        return {
+            "retention_days": manager.retention_days,
+            "enabled": manager.enabled,
+            "cutoff": manager.cutoff() if manager.enabled else None,
+            "expired_counts": manager.count_expired() if manager.enabled else {},
+        }
+
+    @app.post(
+        "/api/v1/retention/prune",
+        tags=["Maintenance"],
+    )
+    async def retention_prune_now(
+        _auth: None = Depends(require_api_key),
+    ) -> Dict[str, Any]:
+        """Triggers an immediate retention sweep."""
+        manager = RetentionManager(
+            db=database, retention_days=config.retention_days
+        )
+        if not manager.enabled:
+            return {"enabled": False, "detail": "Retention is disabled."}
+        result = manager.prune_once()
+        return {"enabled": True, **result.to_dict()}
 
     @app.get(
         "/metrics",

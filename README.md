@@ -200,6 +200,10 @@ Every setting is read from the environment via `AntlionConfig.from_env()`. Unset
 | `ANTLION_ALERT_SEVERITY` | `HIGH` | Minimum severity to dispatch (`LOW`/`MEDIUM`/`HIGH`/`CRITICAL`). |
 | `ANTLION_ALERT_DEDUP_WINDOW_SEC` | `300` | Collapse repeats from the same IP + attack class within this window. `0` disables. |
 | `ANTLION_ALERT_DEDUP_ENABLED` | `true` | Master switch for alert suppression. |
+| `ANTLION_RETENTION_DAYS` | `30` | Delete records older than this. `0` disables. |
+| `ANTLION_RETENTION_INTERVAL_SEC` | `3600` | How often the sweep runs. |
+| `ANTLION_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per statement, bounding write-lock time. |
+| `ANTLION_RETENTION_AUTOSTART` | `true` | Start the sweeper with `api`/`decoy` subcommands. |
 | `ANTLION_API_KEY` | — | Shared secret for `/api/v1`. **Unset = unauthenticated.** |
 | `ANTLION_CORS_ORIGINS` | localhost origins | Comma-separated CORS allowlist. |
 | `ANTLION_TRUST_PROXY` | `false` | Honour `X-Forwarded-For` for attribution. |
@@ -236,6 +240,8 @@ antlion api        [--host HOST] [--port PORT]
 antlion query verdicts [--limit N] [--ip IP] [--severity S] [--json]
 antlion query intel   <IP> [--json]
 antlion query stats   [--json]
+antlion prune     [--days N] [--dry-run]
+antlion export    [--format {csv,json,stix}] [--limit N] [--ip IP] [--output FILE]
 antlion train      [--data CSV] [--save-path PATH]
 antlion info
 ```
@@ -254,12 +260,72 @@ Data routes require `X-API-Key` (or `Authorization: Bearer …`) when `ANTLION_A
 | `GET` | `/api/v1/verdicts/{id}` | Yes | Single verdict |
 | `GET` | `/api/v1/intel/{ip}` | Yes | Forensic dossier and timeline |
 | `GET` | `/api/v1/stats` | Yes | Aggregated statistics |
+| `GET` | `/api/v1/export/verdicts.csv` | Yes | CSV export |
+| `GET` | `/api/v1/export/verdicts.json` | Yes | JSON export |
+| `GET` | `/api/v1/export/stix` | Yes | STIX 2.1 bundle |
+| `GET` | `/api/v1/retention/status` | Yes | Records the next sweep would delete |
+| `POST` | `/api/v1/retention/prune` | Yes | Trigger a sweep now |
 | `GET` | `/metrics` | No | Prometheus metrics (text exposition format) |
 | `GET` | `/docs` | — | OpenAPI UI |
 
 ```bash
 curl -H "X-API-Key: $ANTLION_API_KEY" http://localhost:8000/api/v1/stats
 ```
+
+---
+
+## Data Retention
+
+SQLite is never trimmed on its own, and a public decoy produces telemetry
+continuously. Without a retention policy the event store grows until disk fills.
+
+`ANTLION_RETENTION_DAYS` (default 30) deletes verdicts, decoy events, and flow
+records older than the window. A background scheduler runs the sweep on
+`api` and `decoy` startup, so long-running deployments are covered without
+cron.
+
+```bash
+antlion prune --days 7          # delete anything older than 7 days
+antlion prune --dry-run         # report what would be deleted
+```
+
+Deletion runs in **bounded batches** (`ANTLION_RETENTION_BATCH_SIZE`). A single
+large `DELETE` on a busy database holds the write lock long enough to stall
+verdict persistence, which is exactly when you least want the pipeline blocked.
+
+```
+GET  /api/v1/retention/status    # how many records the next sweep would delete
+POST /api/v1/retention/prune     # trigger a sweep now
+```
+
+Set `ANTLION_RETENTION_DAYS=0` to disable. Note that retention deletes forensic
+evidence — choose a window that matches your investigation requirements and any
+regulatory obligations.
+
+---
+
+## SIEM Export
+
+Verdicts can leave Antlion in three formats, via CLI or API:
+
+```bash
+antlion export --format csv  --limit 5000 --output verdicts.csv
+antlion export --format stix --limit 5000 --output indicators.json
+```
+
+```bash
+curl -H "X-API-Key: $ANTLION_API_KEY" \
+  'http://localhost:8000/api/v1/export/stix?limit=500'
+```
+
+| Format | Use |
+|---|---|
+| `csv` | Flattened rows for analysts and log pipelines. Commands are `; `-joined so embedded separators cannot break a row. |
+| `json` | Native verdict dictionaries for programmatic consumers. |
+| `stix` | STIX 2.1 `indicator` bundle for threat-intel platforms. IPv6 literals are quoted correctly in patterns; forensic context that has no STIX equivalent is preserved under `x_antlion_context`. |
+
+All export endpoints require the API key — they contain the same data as the
+other `/api/v1` routes.
 
 ---
 
@@ -346,7 +412,7 @@ Because decoys face the open internet, every unbounded structure is capped:
 ### Known limitations
 
 - The SSH/Telnet decoy emulates a plain protocol; it does not implement real SSH key exchange.
-- The database grows unbounded without a retention job (see `ANTLION_RETENTION_DAYS`).
+- Retention deletes forensic evidence. Choose `ANTLION_RETENTION_DAYS` against your investigation and regulatory requirements.
 
 ---
 
