@@ -128,6 +128,16 @@ class AntlionConfig:
     # Master switch for alert deduplication.
     alert_dedup_enabled: bool = True
 
+    # ── Data Retention ───────────────────────────────────────────
+    # Delete stored records older than this many days. 0 disables retention.
+    retention_days: int = 30
+    # Interval between automatic retention sweeps.
+    retention_interval_sec: int = 3600
+    # Rows deleted per statement, keeping write locks short.
+    retention_batch_size: int = 5000
+    # Start the retention scheduler automatically at CLI startup.
+    retention_autostart: bool = True
+
     # ── Query API Security ───────────────────────────────────────
     # Shared secret required by /api/v1 data routes. None disables auth.
     api_key: Optional[str] = None
@@ -189,6 +199,10 @@ class AntlionConfig:
         dedup_window = _env_int("ANTLION_ALERT_DEDUP_WINDOW_SEC", 300)
         dedup_enabled = _env_bool("ANTLION_ALERT_DEDUP_ENABLED", True)
 
+        retention_days = _env_int("ANTLION_RETENTION_DAYS", 30)
+        if retention_days < 0:
+            retention_days = 0
+
         api_key = _env_str("ANTLION_API_KEY") or None
 
         cors_raw = _env_csv("ANTLION_CORS_ORIGINS")
@@ -206,6 +220,10 @@ class AntlionConfig:
             min_alert_severity=severity,
             alert_dedup_window_sec=dedup_window,
             alert_dedup_enabled=dedup_enabled,
+            retention_days=retention_days,
+            retention_interval_sec=_env_int("ANTLION_RETENTION_INTERVAL_SEC", 3600),
+            retention_batch_size=_env_int("ANTLION_RETENTION_BATCH_SIZE", 5000),
+            retention_autostart=_env_bool("ANTLION_RETENTION_AUTOSTART", True),
             api_key=api_key,
             cors_origins=cors_raw,
             trust_proxy_headers=_env_bool("ANTLION_TRUST_PROXY", False),
