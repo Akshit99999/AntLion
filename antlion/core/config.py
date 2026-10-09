@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import List, Optional
 
 
 @dataclass
@@ -47,6 +48,42 @@ class HeuristicConfig:
     port_scan_unique_ports_threshold: int = 4
 
 
+def _env_str(key: str, default: str = "") -> str:
+    """Reads an environment variable, treating empty/whitespace as unset."""
+    raw = os.environ.get(key)
+    if raw is None:
+        return default
+    raw = raw.strip()
+    return raw if raw else default
+
+
+def _env_int(key: str, default: int) -> int:
+    """Reads an integer environment variable, falling back on invalid input."""
+    raw = _env_str(key)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_bool(key: str, default: bool = False) -> bool:
+    """Reads a boolean environment variable (1/true/yes/on are truthy)."""
+    raw = _env_str(key).lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
+def _env_csv(key: str) -> List[str]:
+    """Reads a comma-separated environment variable into a clean list."""
+    raw = _env_str(key)
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 @dataclass
 class AntlionConfig:
     """Global configuration for Antlion deployment."""
@@ -58,6 +95,10 @@ class AntlionConfig:
     )
     db_filename: str = "antlion.db"
 
+    # Explicit database path override (ANTLION_DB_PATH). When set, this wins
+    # over data_dir/db_filename.
+    db_path_override: Optional[Path] = None
+
     # Decoy Settings
     web_host: str = "0.0.0.0"
     web_port: int = 8080
@@ -66,7 +107,6 @@ class AntlionConfig:
     telnet_host: str = "0.0.0.0"
     telnet_port: int = 2323
 
-    # Query API Settings
     api_host: str = "127.0.0.1"
     api_port: int = 8000
 
@@ -78,11 +118,29 @@ class AntlionConfig:
     # ML Classifier Settings
     model_path: str = "models/antlion_classifier.joblib"
 
+    # ── Alert Dispatch ────────────────────────────────────────────
+    # Webhook URLs for SIEM/chat delivery. Every entry receives an alert.
+    webhook_urls: List[str] = field(default_factory=list)
+    # Minimum severity that triggers an outbound alert.
+    min_alert_severity: str = "HIGH"
+
+    # ── Query API Security ───────────────────────────────────────
+    # Shared secret required by /api/v1 data routes. None disables auth.
+    api_key: Optional[str] = None
+    # Explicit CORS allowlist. Never use a wildcard with credentials.
+    cors_origins: List[str] = field(default_factory=list)
+    # Honour X-Forwarded-For for client IP attribution (only behind a proxy).
+    trust_proxy_headers: bool = False
+
     # Sub-configs
     scoring: ScoringWeights = field(default_factory=ScoringWeights)
     heuristics: HeuristicConfig = field(default_factory=HeuristicConfig)
 
     def get_db_path(self) -> Path:
+        # ANTLION_DB_PATH takes precedence when explicitly configured.
+        if self.db_path_override:
+            self.db_path_override.parent.mkdir(parents=True, exist_ok=True)
+            return self.db_path_override
         self.data_dir.mkdir(parents=True, exist_ok=True)
         return self.data_dir / self.db_filename
 
@@ -96,6 +154,56 @@ class AntlionConfig:
         model_path.parent.mkdir(parents=True, exist_ok=True)
         return model_path
 
+    @classmethod
+    def from_env(cls) -> "AntlionConfig":
+        """Builds a configuration from environment variables.
 
-# Global default configuration instance
-DEFAULT_CONFIG = AntlionConfig()
+        Reads ANTLION_HOME, ANTLION_DB_PATH, webhook settings, alert severity,
+        API key, CORS origins, and decoy ports. Invalid values fall back to
+        safe defaults rather than raising, so a malformed environment never
+        prevents the decoys from starting.
+        """
+        data_dir = Path(_env_str("ANTLION_HOME", str(Path.home() / ".antlion")))
+
+        db_override_raw = _env_str("ANTLION_DB_PATH")
+        db_override = Path(db_override_raw).expanduser() if db_override_raw else None
+
+        # Collect webhook targets from both the dedicated Discord/Slack vars
+        # and a generic comma-separated list.
+        webhook_urls: List[str] = []
+        for key in (
+            "ANTLION_DISCORD_WEBHOOK",
+            "ANTLION_SLACK_WEBHOOK",
+            "ANTLION_WEBHOOK_URLS",
+        ):
+            webhook_urls.extend(_env_csv(key))
+
+        severity = _env_str("ANTLION_ALERT_SEVERITY", "HIGH").upper()
+        if severity not in ("LOW", "MEDIUM", "HIGH", "CRITICAL"):
+            severity = "HIGH"
+
+        api_key = _env_str("ANTLION_API_KEY") or None
+
+        cors_raw = _env_csv("ANTLION_CORS_ORIGINS")
+        if not cors_raw:
+            cors_raw = ["http://localhost:8000", "http://127.0.0.1:8000"]
+
+        return cls(
+            data_dir=data_dir,
+            db_path_override=db_override,
+            web_port=_env_int("ANTLION_WEB_PORT", 8080),
+            ssh_port=_env_int("ANTLION_SSH_PORT", 2222),
+            telnet_port=_env_int("ANTLION_TELNET_PORT", 2323),
+            api_port=_env_int("ANTLION_API_PORT", 8000),
+            webhook_urls=webhook_urls,
+            min_alert_severity=severity,
+            api_key=api_key,
+            cors_origins=cors_raw,
+            trust_proxy_headers=_env_bool("ANTLION_TRUST_PROXY", False),
+        )
+
+
+# Global default configuration instance.
+# Built from the environment when ANTLION_* variables are present, otherwise
+# falls back to library defaults so tests and imports stay predictable.
+DEFAULT_CONFIG = AntlionConfig.from_env()

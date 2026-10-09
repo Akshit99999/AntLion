@@ -81,21 +81,29 @@ def main() -> None:
         parser.print_help()
         sys.exit(0)
 
-    db_path = DEFAULT_CONFIG.get_db_path()
+    # Rebuild config from the environment so ANTLION_* variables (DB path,
+    # webhooks, alert severity, API key) take effect at runtime.
+    config = DEFAULT_CONFIG.__class__.from_env()
+    db_path = config.get_db_path()
     db = AntlionDatabase(db_path)
-    engine = VerdictEngine(config=DEFAULT_CONFIG, db=db)
+    engine = VerdictEngine(config=config, db=db)
 
     if args.subcommand == "info":
         print("Antlion v0.1.0 - Defensive Intrusion Detection Platform")
         print(f"Database Path:   {db_path}")
-        print(f"Data Directory:  {DEFAULT_CONFIG.data_dir}")
-        print(f"Default Web:     {DEFAULT_CONFIG.web_host}:{DEFAULT_CONFIG.web_port}")
-        print(f"Default SSH:     {DEFAULT_CONFIG.ssh_host}:{DEFAULT_CONFIG.ssh_port}")
+        print(f"Data Directory:  {config.data_dir}")
+        print(f"Default Web:     {config.web_host}:{config.web_port}")
+        print(f"Default SSH:     {config.ssh_host}:{config.ssh_port}")
+        print(f"Alert Webhooks:  {len(config.webhook_urls)} configured")
+        print(f"Min Severity:    {config.min_alert_severity}")
+        print(f"API Key:         {'configured' if config.api_key else 'NOT SET (unprotected)'}")
         return
 
     if args.subcommand == "decoy":
         if args.decoy_service == "web":
-            server = WebDecoyServer(host=args.host, port=args.port, verdict_engine=engine)
+            server = WebDecoyServer(
+                host=args.host, port=args.port, verdict_engine=engine, config=config
+            )
             server.run()
         elif args.decoy_service == "ssh":
             ssh_server = InteractiveDecoyServer(
@@ -110,7 +118,7 @@ def main() -> None:
             parser.parse_args(["decoy", "--help"])
 
     elif args.subcommand == "api":
-        app = create_query_api(db=db)
+        app = create_query_api(db=db, config=config)
         print(f"Starting Antlion REST API on http://{args.host}:{args.port} (Docs: http://{args.host}:{args.port}/docs)")
         uvicorn.run(app, host=args.host, port=args.port)
 
@@ -131,7 +139,7 @@ def main() -> None:
             parser.parse_args(["query", "--help"])
 
     elif args.subcommand == "train":
-        save_path = args.save_path or DEFAULT_CONFIG.get_model_path()
+        save_path = args.save_path or config.get_model_path()
         import pandas as pd
         df = pd.read_csv(args.data) if args.data else None
         print("Starting classifier benchmark training...")
