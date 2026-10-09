@@ -123,6 +123,10 @@ class AntlionConfig:
     webhook_urls: List[str] = field(default_factory=list)
     # Minimum severity that triggers an outbound alert.
     min_alert_severity: str = "HIGH"
+    # Collapse repeated (source_ip, attack_type) alerts within this window.
+    alert_dedup_window_sec: int = 300
+    # Master switch for alert deduplication.
+    alert_dedup_enabled: bool = True
 
     # ── Query API Security ───────────────────────────────────────
     # Shared secret required by /api/v1 data routes. None disables auth.
@@ -182,6 +186,9 @@ class AntlionConfig:
         if severity not in ("LOW", "MEDIUM", "HIGH", "CRITICAL"):
             severity = "HIGH"
 
+        dedup_window = _env_int("ANTLION_ALERT_DEDUP_WINDOW_SEC", 300)
+        dedup_enabled = _env_bool("ANTLION_ALERT_DEDUP_ENABLED", True)
+
         api_key = _env_str("ANTLION_API_KEY") or None
 
         cors_raw = _env_csv("ANTLION_CORS_ORIGINS")
@@ -197,6 +204,8 @@ class AntlionConfig:
             api_port=_env_int("ANTLION_API_PORT", 8000),
             webhook_urls=webhook_urls,
             min_alert_severity=severity,
+            alert_dedup_window_sec=dedup_window,
+            alert_dedup_enabled=dedup_enabled,
             api_key=api_key,
             cors_origins=cors_raw,
             trust_proxy_headers=_env_bool("ANTLION_TRUST_PROXY", False),
