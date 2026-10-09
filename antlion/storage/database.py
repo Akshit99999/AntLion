@@ -308,6 +308,12 @@ class AntlionDatabase:
             cursor.execute("SELECT COUNT(*) AS total FROM flow_records;")
             total_flows = cursor.fetchone()["total"]
 
+            # Distinct attacker count is unbounded in principle (each new
+            # source IP adds a row), so it is computed on demand rather than
+            # materialised into a cached statistic.
+            cursor.execute("SELECT COUNT(DISTINCT source_ip) AS total FROM verdicts;")
+            distinct_attackers = cursor.fetchone()["total"]
+
             # Severity distribution
             cursor.execute(
                 "SELECT severity, COUNT(*) as count FROM verdicts GROUP BY severity;"
@@ -361,6 +367,7 @@ class AntlionDatabase:
                 "total_verdicts": total_verdicts,
                 "total_decoy_hits": total_decoy_events,
                 "total_flows_monitored": total_flows,
+                "distinct_attackers": distinct_attackers,
                 "severity_breakdown": severity_counts,
                 "attack_type_breakdown": attack_type_counts,
                 "top_attackers": top_attackers,

@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 from antlion.capture.flow_extractor import FlowFeatureExtractor, PacketMetadata
 from antlion.classification.anomaly import FlowAnomalyDetector
 from antlion.classification.inference import FlowClassifier
+from antlion.core.metrics import REGISTRY
 from antlion.core.types import DecoyEvent, FlowRecord, MLPrediction, Verdict
 from antlion.verdict.engine import VerdictEngine
 
@@ -126,6 +127,18 @@ class LiveCapturePipeline:
                     for k, _ in ordered[:overflow]:
                         del self.extractor.flows[k]
 
+                self._publish_flow_metrics()
+
+    def _publish_flow_metrics(self) -> None:
+        """Publishes tracked-flow gauges. Caller must hold the lock."""
+        try:
+            REGISTRY.set("antlion_flows_tracked", len(self.extractor.flows))
+            REGISTRY.set(
+                "antlion_ip_flow_cache_entries", len(self._ip_flow_cache)
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("Flow metric publication skipped: %s", e)
+
     def correlate_and_process_decoy(self, event: DecoyEvent) -> Verdict:
         """Correlates an incoming decoy interaction with concurrent network flow features."""
         with self._lock:
@@ -215,6 +228,8 @@ class LiveCapturePipeline:
                 for k, _ in ordered[:overflow]:
                     del self.extractor.flows[k]
                     removed += 1
+
+            self._publish_flow_metrics()
 
         if removed:
             logger.info("Pruned %d stale flow entries", removed)

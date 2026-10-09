@@ -12,6 +12,11 @@ import urllib.request
 from typing import Any, Dict, List, Optional
 
 from antlion.alerts.dedup import AlertDeduplicator
+from antlion.core.metrics import (
+    record_alert_delivery,
+    record_alert_suppression,
+    refresh_suppression_gauge,
+)
 from antlion.core.types import SeverityLevel, Verdict
 
 logger = logging.getLogger("antlion.alerts.dispatcher")
@@ -57,6 +62,7 @@ class AlertDispatcher:
 
         should_emit, occurrence = self.deduplicator.check(verdict)
         if not should_emit:
+            record_alert_suppression()
             logger.debug(
                 "Alert suppressed (occurrence %d) for %s / %s",
                 occurrence,
@@ -66,6 +72,17 @@ class AlertDispatcher:
             return
 
         self._dispatch(verdict)
+        self._publish_dedup_metrics()
+
+    def _publish_dedup_metrics(self) -> None:
+        """Mirrors deduplicator counters into the metrics registry."""
+        try:
+            refresh_suppression_gauge(
+                emitted=self.deduplicator.stats.emitted,
+                suppressed=self.deduplicator.stats.suppressed,
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("Dedup metric publication skipped: %s", e)
 
     def _dispatch(self, verdict: Verdict) -> None:
         """Logs the CEF entry and delivers webhooks off the caller thread."""
@@ -130,7 +147,9 @@ class AlertDispatcher:
                 )
                 with urllib.request.urlopen(req, timeout=3.0) as resp:
                     pass
+                record_alert_delivery("success")
             except Exception as e:
+                record_alert_delivery("failure")
                 logger.debug("Failed delivering webhook to %s: %s", url, e)
 
     def _build_discord_payload(self, v: Verdict) -> Dict[str, Any]:
