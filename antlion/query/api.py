@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from antlion.core.config import DEFAULT_CONFIG, AntlionConfig
-from antlion.core.metrics import REGISTRY, set_database_gauges
+from antlion.core.metrics import REGISTRY, publish_intel_gauges, set_database_gauges
 from antlion.query.dashboard import DASHBOARD_HTML
 from antlion.query.export import export_verdicts
 from antlion.storage.database import AntlionDatabase
@@ -22,7 +22,7 @@ from antlion.storage.prune import RetentionManager
 logger = logging.getLogger("antlion.query.api")
 
 
-def refresh_database_gauges(database: AntlionDatabase) -> None:
+def refresh_database_gauges(database: AntlionDatabase, enricher=None) -> None:
     """Updates scrape-time gauges from persisted state.
 
     Failures are swallowed: a metrics scrape must never take down the API or
@@ -40,10 +40,17 @@ def refresh_database_gauges(database: AntlionDatabase) -> None:
     except Exception as e:
         logger.debug("Database gauge refresh failed: %s", e)
 
+    if enricher is not None:
+        try:
+            publish_intel_gauges(enricher.cache_stats())
+        except Exception as e:
+            logger.debug("Intel gauge refresh failed: %s", e)
+
 
 def create_query_api(
     db: Optional[AntlionDatabase] = None,
     config: Optional[AntlionConfig] = None,
+    enricher=None,
 ) -> FastAPI:
     """Creates the FastAPI REST query interface.
 
@@ -251,7 +258,7 @@ def create_query_api(
         aggregate counters and gauges — no captured credentials, no attacker
         IPs, no verdict detail.
         """
-        refresh_database_gauges(database)
+        refresh_database_gauges(database, enricher)
         return REGISTRY.render()
 
     @app.get("/api/v1/stats", tags=["Analytics"])

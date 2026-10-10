@@ -68,6 +68,17 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
+def _env_float(key: str, default: float) -> float:
+    """Reads a float environment variable, falling back on invalid input."""
+    raw = _env_str(key)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def _env_bool(key: str, default: bool = False) -> bool:
     """Reads a boolean environment variable (1/true/yes/on are truthy)."""
     raw = _env_str(key).lower()
@@ -145,6 +156,25 @@ class AntlionConfig:
     cors_origins: List[str] = field(default_factory=list)
     # Honour X-Forwarded-For for client IP attribution (only behind a proxy).
     trust_proxy_headers: bool = False
+
+    # ── IP Enrichment ─────────────────────────────────────────────
+    # Background geolocation/ASN enrichment. Never blocks the request path:
+    # source IPs are attacker-controlled and near-unique, so a blocking
+    # provider lookup would add its full timeout to every interaction.
+    ip_enrichment_enabled: bool = True
+    # Bounded LRU cache. Must stay bounded -- the keyspace is attacker-supplied,
+    # so an unbounded cache is a memory leak with attacker-chosen lifetime.
+    ip_cache_max_size: int = 10000
+    # Seconds before a cached profile is re-resolved.
+    ip_cache_ttl_seconds: int = 86400
+    # Per-lookup provider timeout. Applies to the worker thread only.
+    ip_lookup_timeout: float = 1.5
+    # Consecutive failures before lookups are suspended.
+    ip_lookup_failure_threshold: int = 3
+    # How long the circuit stays open after tripping.
+    ip_lookup_cooldown_seconds: int = 300
+    # Maximum queued addresses awaiting background resolution.
+    ip_lookup_queue_size: int = 2000
 
     # Sub-configs
     scoring: ScoringWeights = field(default_factory=ScoringWeights)
@@ -227,6 +257,13 @@ class AntlionConfig:
             api_key=api_key,
             cors_origins=cors_raw,
             trust_proxy_headers=_env_bool("ANTLION_TRUST_PROXY", False),
+            ip_enrichment_enabled=_env_bool("ANTLION_IP_ENRICHMENT", True),
+            ip_cache_max_size=_env_int("ANTLION_IP_CACHE_MAX_SIZE", 10000),
+            ip_cache_ttl_seconds=_env_int("ANTLION_IP_CACHE_TTL_SEC", 86400),
+            ip_lookup_timeout=_env_float("ANTLION_IP_LOOKUP_TIMEOUT", 1.5),
+            ip_lookup_failure_threshold=_env_int("ANTLION_IP_FAILURE_THRESHOLD", 3),
+            ip_lookup_cooldown_seconds=_env_int("ANTLION_IP_CIRCUIT_COOLDOWN_SEC", 300),
+            ip_lookup_queue_size=_env_int("ANTLION_IP_QUEUE_SIZE", 2000),
         )
 
 

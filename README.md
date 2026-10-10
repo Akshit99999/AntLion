@@ -204,6 +204,13 @@ Every setting is read from the environment via `AntlionConfig.from_env()`. Unset
 | `ANTLION_RETENTION_INTERVAL_SEC` | `3600` | How often the sweep runs. |
 | `ANTLION_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per statement, bounding write-lock time. |
 | `ANTLION_RETENTION_AUTOSTART` | `true` | Start the sweeper with `api`/`decoy` subcommands. |
+| `ANTLION_IP_ENRICHMENT` | `true` | Background ASN/geo enrichment. Never blocks a request. |
+| `ANTLION_IP_CACHE_MAX_SIZE` | `10000` | Bounded LRU cache of resolved profiles. |
+| `ANTLION_IP_CACHE_TTL_SEC` | `86400` | Seconds before a cached profile is re-resolved. |
+| `ANTLION_IP_LOOKUP_TIMEOUT` | `1.5` | Provider timeout. Worker thread only. |
+| `ANTLION_IP_FAILURE_THRESHOLD` | `3` | Failures before the circuit opens. |
+| `ANTLION_IP_CIRCUIT_COOLDOWN_SEC` | `300` | How long the circuit stays open. |
+| `ANTLION_IP_QUEUE_SIZE` | `2000` | Max addresses queued for background resolution. |
 | `ANTLION_API_KEY` | — | Shared secret for `/api/v1`. **Unset = unauthenticated.** |
 | `ANTLION_CORS_ORIGINS` | localhost origins | Comma-separated CORS allowlist. |
 | `ANTLION_TRUST_PROXY` | `false` | Honour `X-Forwarded-For` for attribution. |
@@ -270,6 +277,51 @@ Data routes require `X-API-Key` (or `Authorization: Bearer …`) when `ANTLION_A
 
 ```bash
 curl -H "X-API-Key: $ANTLION_API_KEY" http://localhost:8000/api/v1/stats
+```
+
+---
+
+## IP Enrichment
+
+`intel/enricher.py` adds geolocation, ASN, and hosting/Tor context to verdicts.
+It runs on the decoy request path, which imposes a hard constraint:
+
+**Source IPs are attacker-controlled and near-unique.** A decoy has no
+legitimate users, so caching almost never hits and nearly every interaction
+presents a fresh address. A synchronous provider lookup would therefore add the
+provider's full timeout to every request.
+
+Measured, 200 unique attacker IPs against a 20ms provider:
+
+| | per event |
+|---|---|
+| Blocking lookup (previous) | **24.230 ms** |
+| Background resolution (current) | **0.008 ms** |
+
+At the real 1.5s timeout the previous design cost **1500 ms per request** — an
+attacker could pin the decoy with one request per spoofed source address.
+
+Consequently:
+
+- `enrich()` **never performs network I/O**. It returns a cached profile, a
+  locally-computed one for private ranges, or a neutral placeholder while a
+  background lookup is queued.
+- The `RULE_TOR_PROXY_INTRUSION` / `RULE_HOSTING_ABUSE_INFRA` heuristics simply
+  do not fire until resolution completes. Enrichment is supplementary context,
+  so this is the correct trade.
+- `resolve_now()` remains available for CLI tools that genuinely want to block.
+- The cache is a **bounded LRU** with TTL. The keyspace is attacker-supplied, so
+  an unbounded cache is a memory leak with an attacker-chosen lifetime.
+- A **circuit breaker** suspends lookups after repeated provider failures, so
+  an unreachable provider degrades enrichment instead of stalling verdicts.
+- Failed lookups are **not cached** — provider health is the circuit breaker's
+  job, and caching a transient failure would blind enrichment for a full day.
+- Concurrent requests for the same address collapse into one lookup.
+
+Benchmark it yourself:
+
+```bash
+python3 benchmarks/enrichment_latency.py
 ```
 
 ---
@@ -354,6 +406,10 @@ scrape_configs:
 | `antlion_alerts_suppressed_total` | gauge | — | Alerts collapsed by dedup |
 | `antlion_flows_tracked` | gauge | — | Flow accumulators in memory |
 | `antlion_ip_flow_cache_entries` | gauge | — | Per-IP correlation cache size |
+| `antlion_intel_lookup_total` | counter | `outcome` | Enrichment lookups by outcome |
+| `antlion_intel_cache_entries` | gauge | — | Cached intel profiles |
+| `antlion_intel_cache_hit_rate` | gauge | — | Enrichment cache hit ratio |
+| `antlion_intel_circuit_open` | gauge | — | Whether the enrichment circuit is open |
 | `antlion_verdicts_stored` | gauge | — | Verdicts persisted |
 | `antlion_distinct_attackers` | gauge | — | Distinct source IPs recorded |
 | `antlion_decoy_events_stored` | gauge | — | Decoy events persisted |
@@ -374,6 +430,9 @@ rate(antlion_decoy_connections_rejected_total[5m]) > 0
 
 # Webhook deliveries are failing
 rate(antlion_alerts_delivered_total{result="failure"}[5m]) > 0
+
+# Enrichment provider is down (circuit is open, so lookups are suspended)
+antlion_intel_circuit_open == 1
 ```
 
 ---

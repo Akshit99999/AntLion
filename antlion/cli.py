@@ -181,7 +181,9 @@ def main() -> None:
 
     elif args.subcommand == "api":
         _retention = _maybe_start_retention(config, db)
-        app = create_query_api(db=db, config=config)
+        app = create_query_api(
+            db=db, config=config, enricher=engine.heuristics.enricher
+        )
         print(f"Starting Antlion REST API on http://{args.host}:{args.port} (Docs: http://{args.host}:{args.port}/docs)")
         uvicorn.run(app, host=args.host, port=args.port)
 
