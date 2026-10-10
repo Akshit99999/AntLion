@@ -161,6 +161,8 @@ class BehavioralHeuristicsEngine:
     ):
         self.rate_window_seconds = rate_window_seconds
         self.burst_threshold = burst_threshold
+        # Default enrichment never blocks: provider lookups run on a background
+        # worker, so enrichment latency cannot reach the decoy request path.
         self.enricher = enricher or IPThreatEnricher()
         # Sliding history per IP: deque of timestamps
         self._ip_history: Dict[str, Deque[float]] = defaultdict(deque)
@@ -207,10 +209,18 @@ class BehavioralHeuristicsEngine:
         return matches
 
     def _check_ip_threat_intel(self, ip_str: str) -> Optional[HeuristicMatch]:
-        """Evaluates whether attacker IP belongs to an anonymous proxy or abuse hosting provider."""
+        """Evaluates whether attacker IP belongs to an anonymous proxy or abuse hosting provider.
+
+        ``enrich()`` is non-blocking: unresolved addresses yield a placeholder
+        profile that matches no rule, so the heuristic is simply skipped until
+        background resolution completes. This keeps provider latency off the
+        request path.
+        """
         if not self.enricher:
             return None
         profile = self.enricher.enrich(ip_str)
+        if not profile.resolved:
+            return None
         if profile.is_tor_proxy:
             return HeuristicMatch(
                 rule_id="RULE_TOR_PROXY_INTRUSION",

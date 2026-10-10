@@ -192,6 +192,20 @@ def register_default_metrics(registry: MetricsRegistry = REGISTRY) -> MetricsReg
         "antlion_verdicts_stored", "Verdicts persisted in the event store", "gauge",
     )
     registry.register(
+        "antlion_intel_cache_entries", "IP intelligence profiles currently cached", "gauge",
+    )
+    registry.register(
+        "antlion_intel_cache_hit_rate", "IP intelligence cache hit ratio", "gauge",
+    )
+    registry.register(
+        "antlion_intel_lookup_total",
+        "Background IP intelligence lookups, by outcome",
+        "counter",
+    )
+    registry.register(
+        "antlion_intel_circuit_open", "Whether the enrichment circuit breaker is open", "gauge",
+    )
+    registry.register(
         "antlion_distinct_attackers", "Distinct source IPs with recorded verdicts", "gauge",
     )
     registry.register(
@@ -259,6 +273,24 @@ def refresh_suppression_gauge(
     """
     registry.set("antlion_alerts_emitted_total", emitted)
     registry.set("antlion_alerts_suppressed_total", suppressed)
+
+
+def record_intel_lookup(
+    outcome: str, registry: MetricsRegistry = REGISTRY
+) -> None:
+    """Records an enrichment outcome: hit, miss, resolved, or failure."""
+    registry.inc("antlion_intel_lookup_total", outcome=outcome)
+
+
+def publish_intel_gauges(
+    stats: Dict[str, float], registry: MetricsRegistry = REGISTRY
+) -> None:
+    """Publishes enrichment cache occupancy, hit rate, and circuit state."""
+    registry.set("antlion_intel_cache_entries", float(stats.get("cache_size", 0)))
+    registry.set("antlion_intel_cache_hit_rate", float(stats.get("hit_rate", 0.0)))
+    registry.set(
+        "antlion_intel_circuit_open", 1.0 if stats.get("circuit_open") else 0.0
+    )
 
 
 def set_database_gauges(

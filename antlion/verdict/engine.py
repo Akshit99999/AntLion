@@ -12,6 +12,7 @@ from antlion.alerts.dedup import AlertDeduplicator
 from antlion.alerts.dispatcher import AlertDispatcher
 from antlion.core.config import DEFAULT_CONFIG, AntlionConfig
 from antlion.core.metrics import record_decoy_event, record_verdict
+from antlion.intel.enricher import IPThreatEnricher
 from antlion.core.types import (
     AttackCategory,
     DecoyEvent,
@@ -42,6 +43,15 @@ class VerdictEngine:
         self.heuristics = BehavioralHeuristicsEngine(
             rate_window_seconds=self.config.heuristics.rate_window_seconds,
             burst_threshold=self.config.heuristics.burst_threshold_per_window,
+            enricher=IPThreatEnricher(
+                enable_live_lookup=self.config.ip_enrichment_enabled,
+                cache_max_size=self.config.ip_cache_max_size,
+                cache_ttl_seconds=self.config.ip_cache_ttl_seconds,
+                lookup_timeout=self.config.ip_lookup_timeout,
+                failure_threshold=self.config.ip_lookup_failure_threshold,
+                circuit_cooldown_seconds=self.config.ip_lookup_cooldown_seconds,
+                max_queue_size=self.config.ip_lookup_queue_size,
+            ),
         )
         self.scorer = MultiSignalScorer(weights=self.config.scoring)
         self.alerts = alert_dispatcher or self._build_default_dispatcher()
